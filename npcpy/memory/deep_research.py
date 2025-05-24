@@ -67,7 +67,7 @@ def prune_chains():
 
 
 # search and ask will have a check llm command more or less. 
-def consolidate_research(chains, facts, groups, model=model, provider=provider):
+def consolidate_research(chains, facts, groups, model=None, provider=None):
     prompt = f''' 
     You are a research advisor reviewing the notes of your research assisitants who have been working on a request.
     The results from their efforts are contained here:
@@ -78,10 +78,9 @@ def consolidate_research(chains, facts, groups, model=model, provider=provider):
     
     
     Provide your response as a json object with a list of json objects for "most_common_ideas", "most_unusual_ideas" and "most_important_ideas".
-    '''
-    +'''
+    
     Each of those json objects within the sublists should be structured like so: 
-        {
+        {{
             'idea': 'the idea',
             'source_npc': 'the name of the npc chain that provided this idea',
             'supporting_links': [
@@ -92,17 +91,15 @@ def consolidate_research(chains, facts, groups, model=model, provider=provider):
                 'script x was run by npc and verified this idea ',
                 'npc found evidence in site x y was run by npc and verified this idea ',
             ]
-        }   
+        }}   
         
     The links should be a list of links to the original sources of the information that were contained within the chains themselves.
     The supporting evidence should be a list of the evidence that was used to support the idea.
-        
     '''
-    ideas = get_llm_response(prompt,model=model, provider=provider, format='json')
+    ideas = get_llm_response(prompt, model=model, provider=provider, format='json')
     # build knowledge graph 
     
-    groups = identify_groups(facts, model =model, provider=provider)
-
+    groups = identify_groups(facts, model=model, provider=provider)
 
     prompt = f''' 
     You are a research advisor reviewing the notes of your research assisitants who have been working on a request.
@@ -118,21 +115,11 @@ def consolidate_research(chains, facts, groups, model=model, provider=provider):
     Provide your response as a json object with 3 lists each containing 3 items. 
     
     '''
-    ideas_summarized = get_llm_response(prompt,model=model, provider=provider)
+    ideas_summarized = get_llm_response(prompt, model=model, provider=provider)
     
-
     return ideas, ideas_summarized
     
 
 
 ## ultimately wwell do the vector store in the main db. so when we eventually starti adding new facts well  do so by checking similar facts
 # there and then if were doing the rag search well do a rag and then graph
-    
-    
-def enter_dive_mode():
-    return
-
-def main():
-     
-if __name__=='__main__':
-    main()

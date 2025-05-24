@@ -26,3 +26,5 @@ __pycache__/
 *.gz
 *.tgz
 .vscode/mcp.json
+.vscode/settings.json
+.build.py

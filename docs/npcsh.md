@@ -1,5 +1,3 @@
-
-
 <p align="center">
   <img src="https://raw.githubusercontent.com/cagostino/npcpy/main/npcpy/npc_team/npcsh_sibiji.png" alt="npcsh logo with sibiji the spider" width=400 height=400>
 </p>
@@ -12,7 +10,7 @@
 
 - **Smart Interpreter**: `npcsh` leverages the power of LLMs to understand your natural language commands and questions, executing tasks, answering queries, and providing relevant information from local files and the web.
 
-- **Macros**: `npcsh` provides macros to accomplish common tasks with LLMs like voice control (`/whisper`), image generation (`/vixynt`), screenshot capture and analysis (`/ots`), one-shot questions (`/sample`), computer use (`/plonk`),  retrieval augmented generation (`/rag`), search (`/search`) and more. Users can also build their own jinxs and call them like macros from the shell.
+- **Macros**: `npcsh` provides macros to accomplish common tasks with LLMs like voice control (`/yap`), image generation (`/vixynt`), screenshot capture and analysis (`/ots`), one-shot questions (`/sample`), computer use (`/plonk`),  retrieval augmented generation (`/rag`), search (`/search`) and more. Users can also build their own jinxs and call them like macros from the shell.
 
 
 - **NPC-Driven Interactions**: `npcsh` allows users to take advantage of agents (i.e. NPCs) through a managed system. Users build a directory of NPCs and associated jinxs that can be used to accomplish complex tasks and workflows. NPCs can be tailored to specific tasks and have unique personalities, directives, and jinxs. Users can combine NPCs and jinxs in assembly line like workflows or use them in SQL-style models.
@@ -417,7 +415,7 @@ Citation: https://usun.usmission.gov/our-leaders/the-president-of-the-united-sta
 45th & 47th President of the United States After a landslide election victory in 2024, President Donald J. Trump is returning to the White House to build upon his previous successes and use his mandate to reject the extremist policies of the radical left while providing tangible quality of life improvements for the American people. Vice President of the United States In 2024, President Donald J. Trump extended JD the incredible honor of asking him to serve as the Vice-Presidential Nominee for th...
 Citation: https://www.whitehouse.gov/administration/
 Citation: https://www.instagram.com/potus/?hl=en
-The president of the United States (POTUS)[B] is the head of state and head of government of the United States. The president directs the executive branch of the federal government and is the commander-in-chief of the United States Armed Forces. The power of the presidency has grown substantially[12] since the first president, George Washington, took office in 1789.[6] While presidential power has ebbed and flowed over time, the presidency has played an increasingly significant role in American ...
+The president of the United States (POTUS)[B] is the head of state and head of government of the United States. the president directs the executive branch of the federal government and is the commander-in-chief of the United States Armed Forces. The power of the presidency has grown substantially[12] since the first president, George Washington, took office in 1789.[6] While presidential power has ebbed and flowed over time, the presidency has played an increasingly significant role in American ...
 Citation: https://en.wikipedia.org/wiki/President_of_the_United_States
 Citation Links: https://usun.usmission.gov/our-leaders/the-president-of-the-united-states/
 https://www.whitehouse.gov/administration/
@@ -642,7 +640,7 @@ npcsh> /trigger watch for new PDF downloads in the ~/Downloads directory and mov
 to the ~/Documents/PDFs directory . Ensure that the directory exists or create it if it does not.
 ```
 
-On Linux, trigger makes use of inotify-jinxs to watch for file system events. On macOS, it uses fswatch, and on Windows, it uses Watch-Command.
+On Linux, trigger makes use of inotify-tools to watch for file system events. On macOS, it uses fswatch, and on Windows, it uses Watch-Command.
 
 
 

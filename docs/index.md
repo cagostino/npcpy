@@ -1,13 +1,10 @@
-
-
-
 <p align="center">
   <a href= "https://github.com/cagostino/npcpy/blob/main/docs/npcpy.md"> 
   <img src="https://raw.githubusercontent.com/cagostino/npcpy/main/npcpy/npc-python.png" alt="npc-python logo" width=250></a>
 </p>
 
 
-Interested to stay in the loop and to hear the latest and greatest about `npcpy` ? Be sure to sign up for the [npcsh newsletter](https://forms.gle/n1NzQmwjsV4xv1B2A)!
+Interested to stay in the loop and to hear the latest and greatest about `npcpy` ? Be sure to sign up for the [npcpy newsletter](https://forms.gle/n1NzQmwjsV4xv1B2A)!
 
 Welcome to `npcpy`, the python library for the NPC Toolkit and the home of the core command-line programs that make up the NPC Shell (`npcsh`). 
 
@@ -119,7 +116,7 @@ handling agent pass
 - [NPC Shell](npcsh.md)
 - [NPC CLI ](api/npc_cli.md)
 
-- [Alicanto](akicanto.md)
+- [Alicanto](alicanto.md)
 - [Guac](guac.md)
 - [PTI](pti.md)
 - [Spool](spool.md)
@@ -139,12 +136,12 @@ handling agent pass
 Contributions are welcome! Please submit issues and pull requests on the GitHub repository.
 
 ## Support
-If you appreciate the work here, [consider supporting NPC Worldwide](https://buymeacoffee.com/npcworldwide). If you'd like to explore how to use `npcsh` to help your business, please reach out to info@npcworldwi.de .
+If you appreciate the work here, [consider supporting NPC Worldwide](https://buymeacoffee.com/npcworldwide). If you'd like to explore how to use `npcpy` to help your business, please reach out to info@npcworldwi.de .
 
 
 ## NPC Studio
 Coming soon! NPC Studio will be a desktop application for managing chats and agents on your own machine.
-Be sure to sign up for the [npcsh newsletter](https://forms.gle/n1NzQmwjsV4xv1B2A) to hear updates!
+Be sure to sign up for the [npcpy newsletter](https://forms.gle/n1NzQmwjsV4xv1B2A) to hear updates!
 
 ## License
 This project is licensed under the MIT License.

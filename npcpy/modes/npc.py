@@ -59,81 +59,79 @@ def main():
         "-n", "--npc", help="Name of the NPC to use (default: sibiji)", type=str, default="sibiji"
     )
 
-    subparsers = parser.add_subparsers(dest="command", title="Available Commands",
-                                     help="Run 'npc <command> --help' for command-specific help")
+    # No subparsers setup at first - we'll conditionally create them
 
-    for command_name, help_text in router.help_info.items():
-        if router.shell_only.get(command_name, False):
-            continue
+    # First, get any arguments without parsing commands
+    args, all_args = parser.parse_known_args()
 
-        cmd_parser = subparsers.add_parser(command_name, help=help_text, add_help=False)
-        cmd_parser.add_argument('command_args', nargs=argparse.REMAINDER,
-                                help='Arguments passed directly to the command handler')
+    # Check if the first argument is a known command
+    is_valid_command = False
+    command_name = None
+    if all_args and all_args[0] in router.get_commands():
+        is_valid_command = True
+        command_name = all_args[0]
+        all_args = all_args[1:]  # Remove the command from arguments
 
-    args, unknown_args = parser.parse_known_args()
+    # Only set up subparsers if we have a valid command
+    if is_valid_command:
+        subparsers = parser.add_subparsers(dest="command", title="Available Commands",
+                                         help="Run 'npc <command> --help' for command-specific help")
+
+        for cmd_name, help_text in router.help_info.items():
+            if router.shell_only.get(cmd_name, False):
+                continue
+
+            cmd_parser = subparsers.add_parser(cmd_name, help=help_text, add_help=False)
+            cmd_parser.add_argument('command_args', nargs=argparse.REMAINDER,
+                                    help='Arguments passed directly to the command handler')
+
+        # Re-parse with command subparsers
+        args = parser.parse_args([command_name] + all_args)
+        command_args = args.command_args if hasattr(args, 'command_args') else []
+        unknown_args = []
+    else:
+        # Treat all arguments as a prompt
+        args.command = None
+        command_args = []
+        unknown_args = all_args
 
     npc_instance = load_npc_by_name(args.npc, NPCSH_DB_PATH)
 
     effective_model = args.model or NPCSH_CHAT_MODEL
     effective_provider = args.provider or NPCSH_CHAT_PROVIDER
-    #print(args)
-    #print("Debug - args dict:", vars(args))
-    #print("Debug - unknown_args:", unknown_args)
-    #print("Debug - command:", args.command)
-    #print("Debug - command_args:", args.command_args)
 
     extras = {}
 
-    # After parsing arguments, add this code to handle the case where flags are split
-    if unknown_args and args.command_args:
-        i = 0
-        while i < len(unknown_args):
-            # Check if the unknown arg is a flag (--something)
-            if unknown_args[i].startswith('--'):
-                # Extract the parameter name without the -- prefix
-                param = unknown_args[i][2:]
-                
-                # Add it to extras with the corresponding value from command_args
-                if args.command_args:
-                    extras[param] = args.command_args[0]
-                    args.command_args.pop(0)  # Remove the used value
-                else:
-                    extras[param] = True
-            i += 1
-
-    if args.command:
-        handler = router.get_route(args.command)
-        if not handler:
-            #print(f"Error: Command '{args.command}' recognized but no handler found.", file=sys.stderr)
-            sys.exit(1)
-
-        full_command_str = args.command
-        command_args = []
-        
+    # Process command args if we have a valid command
+    if is_valid_command:
         # Parse command args properly
-        if args.command_args:
+        if command_args:
             i = 0
-            while i < len(args.command_args):
-                arg = args.command_args[i]
+            while i < len(command_args):
+                arg = command_args[i]
                 if arg.startswith("--"):
                     param = arg[2:]  # Remove --
                     if "=" in param:
                         param_name, param_value = param.split("=", 1)
                         extras[param_name] = param_value
                         i += 1
-                    elif i + 1 < len(args.command_args) and not args.command_args[i+1].startswith("--"):
-                        extras[param] = args.command_args[i+1]
+                    elif i + 1 < len(command_args) and not command_args[i+1].startswith("--"):
+                        extras[param] = command_args[i+1]
                         i += 2
                     else:
                         extras[param] = True
                         i += 1
                 else:
-                    command_args.append(arg)
                     i += 1
             
-            prompt_parts = command_args
-            if prompt_parts:
-                full_command_str += " " + " ".join(prompt_parts)
+        handler = router.get_route(command_name)
+        if not handler:
+            print(f"Error: Command '{command_name}' recognized but no handler found.", file=sys.stderr)
+            sys.exit(1)
+
+        full_command_str = command_name
+        if command_args:
+            full_command_str += " " + " ".join(command_args)
         
         handler_kwargs = {
             "model": effective_model,
@@ -144,7 +142,6 @@ def main():
             "messages": [],
             "team": None,
             "current_path": os.getcwd(),
-            # Add any parsed parameters directly to kwargs
             **extras
         }
 
@@ -161,17 +158,20 @@ def main():
             elif result is not None:
                 render_markdown(str(result))
             else:
-                print(f"Command '{args.command}' executed.")
+                print(f"Command '{command_name}' executed.")
 
         except Exception as e:
-            print(f"Error executing command '{args.command}': {e}", file=sys.stderr)
+            print(f"Error executing command '{command_name}': {e}", file=sys.stderr)
             traceback.print_exc()
             sys.exit(1)
+    else:
+        # Process as a prompt
+        prompt = " ".join(unknown_args)
 
-    elif unknown_args:
-        prompt = unknown_args[0]
-        if len(unknown_args) > 1:
-            prompt += " " + " ".join(unknown_args[1:])
+        if not prompt:
+            # If no prompt and no command, show help
+            parser.print_help()
+            sys.exit(1)
 
         print(f"Processing prompt: '{prompt}' with NPC: '{args.npc}'...")
         try:
@@ -199,10 +199,6 @@ def main():
             print(f"Error processing prompt: {e}", file=sys.stderr)
             traceback.print_exc()
             sys.exit(1)
-
-    else:
-        parser.print_help()
-        sys.exit(1)
 
 if __name__ == "__main__":
     main()

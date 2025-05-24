@@ -34,7 +34,7 @@ nav:
   - Home: index.md
   - Installation: installation.md
   - 'Using npcsh, the NPC Shell': guide.md
-  - 'Using dive': dive.md
+  - 'Using alicanto': alicanto.md
   - 'Using guac': guac.md
   - 'Using pti': pti.md
   - 'Using spool': spool.md
@@ -46,5 +46,5 @@ nav:
   - API:
     - Image: api/image.md
     - LLM Functions: api/llm_funcs.md
-    - NPC, Team, Tool: api/npc.md
+    - NPC, Team, Jinx: api/npc_compiler.md
     - NPC Sys Env Helpers: api/npc_sys_env_helpers.md

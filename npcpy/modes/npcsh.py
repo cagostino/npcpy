@@ -45,6 +45,8 @@ from npcpy.memory.command_history import (
     save_conversation_message,
 )
 from npcpy.memory.knowledge_graph import breathe
+from npcpy.memory.sleep import sleep, forget
+from npcpy.memory.memory_integration import register_memory_commands, execute_breathe, execute_sleep, execute_forget
 from npcpy.npc_compiler import NPC, Team
 from npcpy.llm_funcs import check_llm_command, get_llm_response, execute_llm_command
 from npcpy.gen.embeddings import get_embeddings
@@ -852,10 +854,16 @@ def run_repl(command_history: CommandHistory, initial_state: ShellState):
             else:
                 cwd_colored = colored(os.path.basename(state.current_path), "blue")
                 if isinstance(state.npc, NPC):
-                    prompt_end = f":{orange(state.npc.name)}> "
+                    prompt_end = f":🤖{orange(state.npc.name)}> "
                 else:
-                    prompt_end = f":{colored('npc', 'blue', attrs=['bold'])}{colored('sh', 'yellow')}> "
+                    prompt_end = f":🤖{colored('npc', 'blue', attrs=['bold'])}{colored('sh', 'yellow')}> "
                 prompt = readline_safe_prompt(f"{cwd_colored}{prompt_end}")
+            cwd_colored = colored(os.path.basename(state.current_path), "blue")
+            if isinstance(state.npc, NPC):
+                prompt_end = f":🤖{orange(state.npc.name)}> "
+            else:
+                prompt_end = f":🤖{colored('npc', 'blue', attrs=['bold'])}{colored('sh', 'yellow')}> "
+            prompt = readline_safe_prompt(f"{cwd_colored}{prompt_end}")
 
             user_input = get_multiline_input(prompt).strip()
             # Handle Ctrl+Z (ASCII SUB, '\x1a') as exit (Windows and Unix)

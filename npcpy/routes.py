@@ -22,7 +22,7 @@ from npcpy.data.load import load_file_contents
 from npcpy.llm_funcs import (
     get_llm_response,
     gen_image,
-    generate_video,
+    gen_video,
 )
 from npcpy.npc_compiler import NPC, Team, Jinx
 from npcpy.npc_compiler import initialize_npc_project
@@ -43,7 +43,7 @@ from npcpy.memory.sleep import sleep, forget
 from npcpy.modes.guac import enter_guac_mode
 from npcpy.modes.plonk import execute_plonk_command
 from npcpy.modes.serve import start_flask_server
-
+from npcpy.modes.alicanto import alicanto
 from npcpy.modes.spool import enter_spool_mode
 from npcpy.modes.wander import enter_wander_mode
 from npcpy.modes.yap import enter_yap_mode
@@ -479,7 +479,7 @@ def roll_handler(command: str, **kwargs):
     if not prompt:
         return {"output": "Usage: /roll <your prompt>", "messages": messages}
     try:
-        result = generate_video(
+        result = gen_video(
             prompt=prompt,
             model=safe_get(kwargs, 'model', NPCSH_VISION_MODEL),
             provider=safe_get(kwargs, 'provider', NPCSH_VISION_PROVIDER),
@@ -749,31 +749,72 @@ def vixynt_handler(command: str, **kwargs):
 @router.route("wander", "Enter wander mode (experimental)")
 def wander_handler(command: str, **kwargs):
     messages = safe_get(kwargs, "messages", [])
-    problem = " ".join(command.split()[1:])
+    command_parts = shlex.split(command)
+    
+    # Extract main parameters
+    if len(command_parts) > 1:
+        problem = " ".join(command_parts[1:])
+    else:
+        problem = ""
+    
+    # Get environment from kwargs if present
+    environment = safe_get(kwargs, 'environment')
+    include_events = not safe_get(kwargs, 'no_events', False)
+    num_events = safe_get(kwargs, 'num_events', 3)
+    
     if not problem:
-        return {"output": "Usage: /wander <problem or topic to explore>", "messages": messages}
+        return {"output": "Usage: /wander <problem or topic to explore> [--environment 'description'] [--no-events] [--num-events N]", "messages": messages}
 
     try:
+        # Get conversation history from the messages if it exists
+        previous_insights = ""
+        if messages and len(messages) > 1:
+            # Extract the recent conversation history to provide context
+            recent_messages = messages[-3:] if len(messages) > 3 else messages
+            previous_insights = "\n\n".join([msg.get("content", "") for msg in recent_messages if msg.get("role") != "system"])
+            
+            if previous_insights:
+                problem = f"{problem}\n\nPrevious insights to build upon:\n{previous_insights}"
+        
         result = enter_wander_mode(
             problem=problem,
             npc=safe_get(kwargs, 'npc'),
             model=safe_get(kwargs, 'model', NPCSH_CHAT_MODEL),
             provider=safe_get(kwargs, 'provider', NPCSH_CHAT_PROVIDER),
+            environment=environment,
+            include_events=include_events,
+            num_events=num_events,
             **safe_get(kwargs, 'api_kwargs', {})
         )
-        output = ""
-        if isinstance(result, tuple) and len(result) > 0:
-             output = str(result[-1])
+        
+        # Convert the result to a string or extract the last insight
+        if isinstance(result, list) and result:
+            # Get the last session's insight
+            last_session = result[-1]
+            output = last_session.get("insight", "Wander mode completed.")
+        elif isinstance(result, dict):
+            output = result.get("insight", "Wander mode completed.")
+        elif isinstance(result, tuple) and len(result) > 0:
+            output = str(result[-1])
         elif result is not None:
-             output = str(result)
+            output = str(result)
         else:
-             output = "Wander mode completed."
+            output = "Wander mode completed."
+        
+        # Add this insight to the message history
+        if messages is not None:
+            messages.append({
+                "role": "assistant",
+                "content": output
+            })
+            
         return {"output": output, "messages": messages}
     except NameError:
         return {"output": "Wander function (enter_wander_mode) not available.", "messages": messages}
     except Exception as e:
         traceback.print_exc()
         return {"output": f"Error during wander mode: {e}", "messages": messages}
+
 @router.route("yap", "Enter voice chat (yap) mode", shell_only=True)
 def whisper_handler(command: str, **kwargs):
     try:
@@ -789,3 +830,120 @@ def whisper_handler(command: str, **kwargs):
     except Exception as e:
         traceback.print_exc()
         return {"output": f"Error entering yap mode: {e}", "messages": safe_get(kwargs, "messages", [])}
+
+@router.route("alicanto", "Conduct deep research with multiple perspectives, identifying gold insights and cliff warnings")
+def alicanto_handler(command: str, **kwargs):
+    messages = safe_get(kwargs, "messages", [])
+    
+    # Parse command with shlex to properly handle quoted strings
+    parts = shlex.split(command)
+    
+    # Process arguments
+    request = ""
+    num_npcs = safe_get(kwargs, 'num_npcs', 5)
+    depth = safe_get(kwargs, 'depth', 3)
+    exploration_factor = safe_get(kwargs, 'exploration', 0.3)
+    creativity_factor = safe_get(kwargs, 'creativity', 0.5)
+    output_format = safe_get(kwargs, 'format', 'report')
+    
+    # Parse command-line arguments
+    i = 1  # Skip "alicanto" command
+    while i < len(parts):
+        if parts[i].startswith('--'):
+            option = parts[i][2:]  # Remove '--'
+            if option in ['num-npcs', 'npcs']:
+                if i + 1 < len(parts) and parts[i + 1].isdigit():
+                    num_npcs = int(parts[i + 1])
+                    i += 2
+                else:
+                    i += 1
+            elif option in ['depth', 'd']:
+                if i + 1 < len(parts) and parts[i + 1].isdigit():
+                    depth = int(parts[i + 1])
+                    i += 2
+                else:
+                    i += 1
+            elif option in ['exploration', 'e']:
+                if i + 1 < len(parts) and parts[i + 1].replace('.', '', 1).isdigit():
+                    exploration_factor = float(parts[i + 1])
+                    i += 2
+                else:
+                    i += 1
+            elif option in ['creativity', 'c']:
+                if i + 1 < len(parts) and parts[i + 1].replace('.', '', 1).isdigit():
+                    creativity_factor = float(parts[i + 1])
+                    i += 2
+                else:
+                    i += 1
+            elif option in ['format', 'f']:
+                if i + 1 < len(parts):
+                    output_format = parts[i + 1]
+                    i += 2
+                else:
+                    i += 1
+            else:
+                # Skip unknown option
+                i += 1
+        else:
+            # This is part of the request
+            request += parts[i] + " "
+            i += 1
+    
+    request = request.strip()
+    
+    # Also apply any kwargs that were passed directly (these override command line args)
+    if 'num_npcs' in kwargs:
+        try:
+            num_npcs = int(kwargs['num_npcs'])
+        except ValueError:
+            return {"output": "Error: num_npcs must be an integer", "messages": messages}
+    
+    if 'depth' in kwargs:
+        try:
+            depth = int(kwargs['depth'])
+        except ValueError:
+            return {"output": "Error: depth must be an integer", "messages": messages}
+    
+    if 'exploration' in kwargs:
+        try:
+            exploration_factor = float(kwargs['exploration'])
+        except ValueError:
+            return {"output": "Error: exploration must be a float", "messages": messages}
+            
+    if 'creativity' in kwargs:
+        try:
+            creativity_factor = float(kwargs['creativity'])
+        except ValueError:
+            return {"output": "Error: creativity must be a float", "messages": messages}
+    
+    if not request:
+        return {"output": "Usage: /alicanto <research request> [--num-npcs N] [--depth N] [--exploration 0.3] [--creativity 0.5] [--format report|summary|full]", "messages": messages}
+    
+    try:
+        print(f"Starting Alicanto research on: {request}")
+        result = alicanto(
+            request=request,
+            num_npcs=num_npcs,
+            depth=depth,
+            memory=3,
+            context=None,
+            model=safe_get(kwargs, 'model', NPCSH_CHAT_MODEL),
+            provider=safe_get(kwargs, 'provider', NPCSH_CHAT_PROVIDER),
+            exploration_factor=exploration_factor,
+            creativity_factor=creativity_factor,
+            output_format=output_format
+        )
+        
+        # Format the output based on the result type
+        if isinstance(result, dict):
+            if "integration" in result:
+                output = result["integration"]
+            else:
+                output = "Alicanto research completed. Full results available in returned data."
+        else:
+            output = result
+            
+        return {"output": output, "messages": messages, "alicanto_result": result}
+    except Exception as e:
+        traceback.print_exc()
+        return {"output": f"Error during Alicanto research: {e}", "messages": messages}

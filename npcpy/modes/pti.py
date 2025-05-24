@@ -106,7 +106,7 @@ def enter_reasoning_human_in_the_loop(
             else:
                 message= "Think first though and use <think> tags in your chain of thought. Once finished, either answer plainly or write a request for input by beginning with the <request_for_input> tag. and close it with a </request_for_input>"
                 if user_input is None:
-                    user_input = input('user>')
+                    user_input = input('🐻‍❄️>')
                 
                 message_id = save_conversation_message(
                     command_history,
@@ -174,7 +174,7 @@ def enter_reasoning_human_in_the_loop(
 
                             print("\nPlease provide the requested information: ")
 
-                            user_input = input('user>')
+                            user_input = input('🐻‍❄️>')
 
                             messages.append({"role": "assistant", "content": request_text})
 
@@ -198,7 +198,7 @@ def enter_reasoning_human_in_the_loop(
                         print(f"\n[Continuing with added context...]\n")        
                         
     except KeyboardInterrupt:
-        user_interrupt = input("\n[Stream interrupted by user]\n Enter your additional input: ")
+        user_interrupt = input("\n[Stream interrupted by user]\n 🔴🔴🔴🔴\nEnter your additional input: ")
         
 
         # Add the interruption to messages and restart stream

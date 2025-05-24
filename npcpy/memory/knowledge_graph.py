@@ -485,6 +485,8 @@ def identify_groups(
     npc: NPC = None,
 ) -> List[str]:
     """Identify natural groups from a list of facts"""
+
+        
     prompt = """What are the main groups these facts could be organized into?
     Express these groups in plain, natural language.
 
@@ -520,7 +522,7 @@ def identify_groups(
     return response["response"]["groups"]
 
 
-def assign_to_groups(
+def assign_groups_to_fact(
     fact: str,
     groups: List[str],
     model: str = "llama3.2",
@@ -532,7 +534,7 @@ def assign_to_groups(
 
     A fact can belong to multiple groups if it fits.
 
-    Here is the facT: {fact}
+    Here is the fact: {fact}
 
     Here are the groups: {groups}
 
@@ -613,7 +615,7 @@ def insert_fact(conn, fact: str, path: str) -> bool:
         return False
 
 
-def assign_fact_to_group(conn, fact: str, group: str) -> bool:
+def assign_fact_to_group_graph(conn, fact: str, group: str) -> bool:
     """Create a relationship between a fact and a group with robust error handling"""
     if conn is None:
         print("Cannot assign fact to group: database connection is None")
@@ -838,8 +840,6 @@ def visualize_graph(conn):
             print(f"  - {f}")
 
     plt.show()
-
-
 
 
 def store_fact_with_embedding(
@@ -1237,3 +1237,548 @@ def answer_with_rag(
     response = get_llm_response(prompt, model=model, provider=provider)
 
     return response["response"]
+
+
+def add_fact(conn, fact: str, source: str) -> bool:
+    """
+    Add a fact to the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        fact: The fact to add
+        source: Source of the fact
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR IGNORE INTO facts (content, source, created_at) VALUES (?, ?, datetime('now'))",
+            (fact, source)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error adding fact: {str(e)}")
+        return False
+
+def add_mistake(conn, mistake: str, source: str) -> bool:
+    """
+    Add a mistake to the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        mistake: The mistake to add
+        source: Source of the mistake
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR IGNORE INTO mistakes (content, source, created_at) VALUES (?, ?, datetime('now'))",
+            (mistake, source)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error adding mistake: {str(e)}")
+        return False
+
+def add_lesson(conn, lesson: str, source: str) -> bool:
+    """
+    Add a lesson to the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        lesson: The lesson to add
+        source: Source of the lesson
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR IGNORE INTO lessons (content, source, created_at) VALUES (?, ?, datetime('now'))",
+            (lesson, source)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error adding lesson: {str(e)}")
+        return False
+
+def add_action(conn, action: str, source: str) -> bool:
+    """
+    Add an action to the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        action: The action to add
+        source: Source of the action
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR IGNORE INTO actions (content, source, created_at) VALUES (?, ?, datetime('now'))",
+            (action, source)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error adding action: {str(e)}")
+        return False
+
+def add_decision(conn, decision: str, source: str) -> bool:
+    """
+    Add a decision to the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        decision: The decision to add
+        source: Source of the decision
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR IGNORE INTO decisions (content, source, created_at) VALUES (?, ?, datetime('now'))",
+            (decision, source)
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error adding decision: {str(e)}")
+        return False
+
+def search_facts(conn, query: str) -> List[Tuple[int, str, str]]:
+    """
+    Search for facts in the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        query: Search query
+        
+    Returns:
+        List of tuples containing (fact_id, content, source)
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, content, source FROM facts WHERE content LIKE ?",
+            (f"%{query}%",)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"Error searching facts: {str(e)}")
+        return []
+
+def search_mistakes(conn, query: str) -> List[Tuple[int, str, str]]:
+    """
+    Search for mistakes in the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        query: Search query
+        
+    Returns:
+        List of tuples containing (mistake_id, content, source)
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, content, source FROM mistakes WHERE content LIKE ?",
+            (f"%{query}%",)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"Error searching mistakes: {str(e)}")
+        return []
+
+def search_lessons(conn, query: str) -> List[Tuple[int, str, str]]:
+    """
+    Search for lessons in the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        query: Search query
+        
+    Returns:
+        List of tuples containing (lesson_id, content, source)
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, content, source FROM lessons WHERE content LIKE ?",
+            (f"%{query}%",)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"Error searching lessons: {str(e)}")
+        return []
+
+def search_actions(conn, query: str) -> List[Tuple[int, str, str]]:
+    """
+    Search for actions in the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        query: Search query
+        
+    Returns:
+        List of tuples containing (action_id, content, source)
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, content, source FROM actions WHERE content LIKE ?",
+            (f"%{query}%",)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"Error searching actions: {str(e)}")
+        return []
+
+def search_decisions(conn, query: str) -> List[Tuple[int, str, str]]:
+    """
+    Search for decisions in the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        query: Search query
+        
+    Returns:
+        List of tuples containing (decision_id, content, source)
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, content, source FROM decisions WHERE content LIKE ?",
+            (f"%{query}%",)
+        )
+        return cursor.fetchall()
+    except Exception as e:
+        print(f"Error searching decisions: {str(e)}")
+        return []
+
+def delete_fact(conn, fact_id: int) -> bool:
+    """
+    Delete a fact from the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        fact_id: ID of the fact to delete
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM facts WHERE id = ?", (fact_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error deleting fact: {str(e)}")
+        return False
+
+def delete_mistake(conn, mistake_id: int) -> bool:
+    """
+    Delete a mistake from the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        mistake_id: ID of the mistake to delete
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM mistakes WHERE id = ?", (mistake_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error deleting mistake: {str(e)}")
+        return False
+
+def delete_lesson(conn, lesson_id: int) -> bool:
+    """
+    Delete a lesson from the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        lesson_id: ID of the lesson to delete
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM lessons WHERE id = ?", (lesson_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error deleting lesson: {str(e)}")
+        return False
+
+def delete_action(conn, action_id: int) -> bool:
+    """
+    Delete an action from the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        action_id: ID of the action to delete
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM actions WHERE id = ?", (action_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error deleting action: {str(e)}")
+        return False
+
+def delete_decision(conn, decision_id: int) -> bool:
+    """
+    Delete a decision from the knowledge graph database.
+    
+    Args:
+        conn: Database connection
+        decision_id: ID of the decision to delete
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM decisions WHERE id = ?", (decision_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error deleting decision: {str(e)}")
+        return False
+
+def setup_chroma_db(collection_name: str, collection_description: str, chroma_path: str):
+    """
+    Set up a ChromaDB collection for vector storage.
+    
+    Args:
+        collection_name: Name of the collection
+        collection_description: Description of the collection
+        chroma_path: Path to the ChromaDB directory
+        
+    Returns:
+        Tuple of (client, collection)
+    """
+    try:
+        import chromadb
+        from chromadb.config import Settings
+        
+        # Create client with persistent storage
+        client = chromadb.PersistentClient(path=chroma_path)
+        
+        # Get or create collection
+        try:
+            collection = client.get_collection(collection_name)
+            print(f"Using existing collection: {collection_name}")
+        except Exception as e:
+            print(f"Creating new collection: {collection_name}")
+            collection = client.create_collection(
+                name=collection_name,
+                metadata={"description": collection_description}
+            )
+            
+        return client, collection
+    except ImportError:
+        print("ChromaDB not installed. Install with pip install chromadb")
+        return None, None
+    except Exception as e:
+        print(f"Error setting up ChromaDB: {str(e)}")
+        return None, None
+
+def store_in_vector_db(chroma_path: str, conversation_text: str, extraction_data: Dict, source: str):
+    """
+    Store extracted information in the vector database.
+    
+    Args:
+        chroma_path: Path to the ChromaDB directory
+        conversation_text: The full conversation text
+        extraction_data: Dictionary with extracted facts, mistakes, lessons, etc.
+        source: Source identifier
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Setup ChromaDB
+        client, collection = setup_chroma_db(
+            "memory_extractions", 
+            "Extracted memory items from conversations",
+            chroma_path
+        )
+        
+        if not collection:
+            return False
+            
+        # Import get_embeddings function
+        from npcpy.llm_funcs import get_embeddings
+        
+        # Prepare items to store
+        docs = []
+        metadatas = []
+        ids = []
+        
+        timestamp = datetime.datetime.now().isoformat()
+        
+        # Process each type of extraction
+        for key, items in extraction_data.items():
+            if not isinstance(items, list):
+                continue
+                
+            for item in items:
+                # Create a unique ID
+                import hashlib
+                item_id = hashlib.md5(f"{key}:{item}:{timestamp}".encode()).hexdigest()
+                
+                # Prepare document and metadata
+                docs.append(item)
+                metadatas.append({
+                    "type": key,
+                    "source": source,
+                    "timestamp": timestamp,
+                    "conversation_snippet": conversation_text[:200] + "..." if len(conversation_text) > 200 else conversation_text
+                })
+                ids.append(item_id)
+        
+        # If we have items to store, get embeddings and add to collection
+        if docs:
+            embeddings = get_embeddings(docs)
+            collection.add(
+                documents=docs,
+                embeddings=embeddings,
+                metadatas=metadatas,
+                ids=ids
+            )
+            
+        return True
+    except Exception as e:
+        print(f"Error storing in vector DB: {str(e)}")
+        return False
+
+def remove_from_vector_db(chroma_path: str, query: str):
+    """
+    Remove entries from the vector database matching a query.
+    
+    Args:
+        chroma_path: Path to the ChromaDB directory
+        query: Query to match for deletion
+        
+    Returns:
+        Number of items deleted
+    """
+    try:
+        # Setup ChromaDB
+        client, collection = setup_chroma_db(
+            "memory_extractions", 
+            "Extracted memory items from conversations",
+            chroma_path
+        )
+        
+        if not collection:
+            return 0
+            
+        # Find items matching the query
+        from npcpy.llm_funcs import get_embeddings
+        query_embedding = get_embeddings([query])[0]
+        
+        # Search for similar items
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=50
+        )
+        
+        if not results or "ids" not in results or not results["ids"]:
+            return 0
+            
+        # Get IDs to delete
+        ids_to_delete = results["ids"][0]
+        
+        # Delete matching items
+        if ids_to_delete:
+            collection.delete(ids=ids_to_delete)
+            
+        return len(ids_to_delete)
+    except Exception as e:
+        print(f"Error removing from vector DB: {str(e)}")
+        return 0
+
+def retrieve_relevant_memory(query: str, chroma_path: str, top_k: int = 5) -> List[Dict]:
+    """
+    Retrieve relevant memories based on a query.
+    
+    Args:
+        query: The query to search for
+        chroma_path: Path to the ChromaDB directory
+        top_k: Number of results to return
+        
+    Returns:
+        List of relevant memories
+    """
+    try:
+        # Setup ChromaDB
+        client, collection = setup_chroma_db(
+            "memory_extractions", 
+            "Extracted memory items from conversations",
+            chroma_path
+        )
+        
+        if not collection:
+            return []
+            
+        # Get embedding for query
+        from npcpy.llm_funcs import get_embeddings
+        query_embedding = get_embeddings([query])[0]
+        
+        # Search for similar items
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"]
+        )
+        
+        if not results or "documents" not in results or not results["documents"]:
+            return []
+            
+        # Format results
+        memories = []
+        for i, doc in enumerate(results["documents"][0]):
+            metadata = results["metadatas"][0][i] if "metadatas" in results and results["metadatas"] else {}
+            distance = results["distances"][0][i] if "distances" in results and results["distances"] else None
+            
+            memory_type = metadata.get("type", "unknown")
+            source = metadata.get("source", "unknown")
+            timestamp = metadata.get("timestamp", "unknown")
+            
+            memories.append({
+                "content": doc,
+                "type": memory_type,
+                "source": source,
+                "timestamp": timestamp,
+                "relevance": 1.0 - (distance / 2.0) if distance is not None else 1.0  # Normalize relevance score
+            })
+            
+        return memories
+    except Exception as e:
+        print(f"Error retrieving from vector DB: {str(e)}")
+        return []

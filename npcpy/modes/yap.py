@@ -435,7 +435,7 @@ def enter_yap_mode(
             # Don't spam the console with prompts when speaking
             if not is_speaking.is_set():
                 print(
-                    "\Speak or type your message (or 'exit' to quit): ",
+                    "🎤🎤🎤🎤\n\Speak or type your message (or 'exit' to quit): ",
                     end="",
                     flush=True,
                 )

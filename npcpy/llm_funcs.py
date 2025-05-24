@@ -69,7 +69,7 @@ def gen_image(
 
 
 
-def generate_video(
+def gen_video(
     prompt,
     model: str = None,
     provider: str = None,

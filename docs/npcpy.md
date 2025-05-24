@@ -59,7 +59,7 @@ for chunk in response['response']:
 ### Example 2: Building a flow with check_llm_command
 
 ```python
-#first let's demonstrate the capabilities of npcsh's check_llm_command
+#first let's demonstrate the capabilities of npcpy's check_llm_command
 from npcpy.llm_funcs import check_llm_command
 
 command = 'can you write a description of the idea of semantic degeneracy?'

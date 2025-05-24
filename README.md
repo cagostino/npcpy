@@ -1,4 +1,3 @@
-
 <p align="center">
   <img src="https://raw.githubusercontent.com/cagostino/npcpy/main/npcpy.png" alt="npcpy logo of a solarpunk sign">
 </p>
@@ -102,8 +101,98 @@ handling agent pass
 {'debrief': {'summary': "The responses provided detailed accounts of the books that the NPC team members, Gabriel Garcia Marquez and Isabel Allende, are most proud of. Gabriel highlighted 'Cien años de soledad,' while Isabel spoke of 'La Casa de los Espíritus.' Both authors expressed deep personal connections to their works, illustrating their significance in Latin American literature and their own identities.", 'recommendations': 'Encourage further engagement with each author to explore more about their literary contributions, or consider asking about themes in their works or their thoughts on current literary trends.'}, 'execution_history': [{'messages': ...}]}
 ```
 
+LLM responses can be obtained without NPCs as well.
 
-See more examples of how to use `npcpy` to create agents and agentic systems [here](https://github.com/cagostino/npcpy/blob/main/docs/npcpy.md). `npcpy` can include images, pdfs, and csvs in its llm response generation. 
+```
+from npcpy.llm_funcs import get_llm_response
+response = get_llm_response("Who was the celtic Messenger god?", model='llama3.2', provider='ollama')
+print(response['response'])
+```
+
+```
+The Celtic messenger god is often associated with the figure of Tylwyth Teg, also known as the Tuatha Dé Danann (meaning "the people of the goddess Danu"). However, among the various Celtic cultures, there are a few gods and goddesses that served similar roles.
+
+One of the most well-known Celtic messengers is Brigid's servant, Líth (also spelled Lid or Lith), who was believed to be a spirit guide for messengers and travelers in Irish mythology.
+```
+The structure of npcpy also allows one to pass an npc
+to `get_llm_response` in addition to using the NPC's wrapped method, 
+allowing you to be flexible in your implementation and testing.
+```
+from npcpy.npc_compiler import NPC
+from npcpy.llm_funcs import get_llm_response
+simon = NPC(
+          name='Simon Bolivar',
+          primary_directive='Liberate South America from the Spanish Royalists.',
+          model='qwen3',
+          provider='ollama'
+          )
+response = get_llm_response("Who was the mythological chilean bird that guides lucky visitors to gold?", npc=simon)
+print(response['response'])
+```
+
+
+
+`npcpy` also supports streaming responses, with the `response` key containing a generator in such cases which can be printed and processed through the print_and
+
+
+```
+from npcpy.npc_sysenv import print_and_process_stream
+from npcpy.llm_funcs import get_llm_response
+response = get_llm_response("When did the united states government begin sendinng advisors to vietnam?", model='llama3.2', provider='ollama', stream = True)
+
+full_response = print_and_process_stream(response['response'], 'llama3.2', 'ollama')
+```
+Return structured outputs by specifying `format='json'` or passing a Pydantic schema. When specific formats are extracted, `npcpy`'s `get_llm_response` will convert the response from its string representation so you don't have to worry about that. 
+
+```
+from npcpy.llm_funcs import get_llm_response
+response = get_llm_response("What is the sentiment of the american people towards the repeal of Roe v Wade? Return a json object with `sentiment` as the key and a float value from -1 to 1 as the value", model='gemma3:1b', provider='ollama', format='json')
+
+print(response['response'])
+```
+```
+{'sentiment': -0.7}
+```
+
+The `get_llm_response` function also can take a list of messages and will additionally return the messages with the user prompt and the assistant response appended if the response is not streamed. If it is streamed, the user must manually append the conversation result as part of their workflow if they want to then pass the messages back in.
+
+Additionally, one can pass attachments. Here we demonstrate both
+```
+from npcpy.llm_funcs import get_llm_response
+messages = [{'role': 'system', 'content': 'You are an annoyed assistant.'}]
+
+response = get_llm_response("What is the meaning of caesar salad", model='gpt-4o-mini', provider='openai', images=['./Language_Evolution_and_Innovation_experiment.png'], messages=messages)
+
+
+
+```
+Easily create images with the generate_image function, using models available through Huggingface's diffusers library or from OpenAI or Gemini.
+```
+from npcpy.llm_funcs import gen_image
+image = gen_image("make a picture of the moon in the summer of marco polo", model='runwayml/stable-diffusion-v1-5', provider='diffusers')
+
+
+image = gen_image("make a picture of the moon in the summer of marco polo", model='dall-e-2', provider='openai')
+
+
+# edit images with 'gpt-image-1' or gemini's multimodal models, passing image paths, byte code images, or PIL instances.
+
+image = gen_image("make a picture of the moon in the summer of marco polo", model='gpt-image-1', provider='openai', attachments=['/path/to/your/image.jpg', your_byte_code_image_here, your_PIL_image_here])
+
+
+image = gen_image("edit this picture of the moon in the summer of marco polo so that it looks like it is in the winter of nishitani", model='gemini-2.0-flash', provider='gemini', attachments= [])
+
+```
+
+Likewise, generate videos :
+
+```
+from npcpy.llm_funcs import gen_video
+image = gen_video("make a video of the moon in the summer of marco polo", model='runwayml/stable-diffusion-v1-5', provider='diffusers')
+```
+
+
+For more examples of how to use `npcpy` to simplify your LLM workflows  or to create agents or multi-agent systems, see [here](https://github.com/cagostino/npcpy/blob/main/docs/npcpy.md). `npcpy` can include images, pdfs, and csvs in its llm response generation. 
 
 
 ## Inference Capabilities
@@ -334,7 +423,8 @@ The following are the current programs in the NPC shell:
   <img src="https://raw.githubusercontent.com/cagostino/npcpy/main/npcpy/npc_team/frederic4.png" alt="npcpy logo of frederic the bear and the pti logo", width=250></a>
 </p>
 Speak frederic the bear who, once he's done thinking, asks you for input before trudging on so it can work with confidence.
-```
+
+```bash
 pti
 ```
 
@@ -353,7 +443,8 @@ pti
   <img src="https://raw.githubusercontent.com/cagostino/npcpy/main/npcpy/npc_team/yap.png" alt="logo for yap ", width=250></a>
 </p>
 
-- an agentic voice control loop with a specified agent. 
+- an agentic voice control loop with a specified agent. When launching `yap`, the user enters the typical `npcsh` agentic loop except that the system is waiting for either text or audio input.
+
 ```
 yap 
 ```
@@ -378,6 +469,7 @@ yap
     ```
     npc wander "How can I improve my creative writing?" --num-events 5
     ```
+
 
 ## Enabling Innovation
 - `npcpy` is a framework that speeds up and simplifies the development of NLP-based or Agent-based applications and provides developers and researchers with methods to explore and test across dozens of models, providers, and personas as well as other model-level hyperparameters (e.g. `temperature`, `top_k`, etc.), incorporating an array of data sources and common tools.
@@ -473,9 +565,9 @@ Then, in a powershell. Download and install ffmpeg.
 ollama pull llama3.2
 ollama pull llava:7b
 ollama pull nomic-embed-text
-pip install npcsh
+pip install npcpy
 # if you want to install with the API libraries
-pip install npcsh[lite]
+pip install npcpy[lite]
 # if you want the full local package set up (ollama, diffusers, transformers, cuda etc.)
 pip install npcpy[local]
 # if you want to use tts/stt
@@ -484,7 +576,7 @@ pip install npcpy[yap]
 # if you want everything:
 pip install npcpy[all]
 ```
-As of now, npcsh appears to work well with some of the core functionalities like /ots and /whisper.
+As of now, npcsh appears to work well with some of the core functionalities like /ots and /yap.
 
 </details>
 
