@@ -69,7 +69,7 @@ def openai_image_gen(
             image=processed_images[0],  # Edit only supports a single image
             prompt=prompt,
             n=n_images,
-            size=f"{height}x{width}",
+            size=f"{width}x{height}",
         )
     else:
         # Use images.generate for new image generation
@@ -77,7 +77,7 @@ def openai_image_gen(
             model=model,
             prompt=prompt,
             n=n_images,
-            size=f"{height}x{width}",
+            size=f"{width}x{height}",
         )
     if model =='gpt-image-1':
         image_base64 = result.data[0].b64_json

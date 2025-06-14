@@ -717,7 +717,7 @@ def vixynt_handler(command: str, **kwargs):
         return {"output": f"Error parsing arguments: {parse_err}. Usage: /vixynt <prompt> [filename=...] [height=...] [width=...] [input=...for editing]", "messages": messages}
     user_prompt = " ".join(prompt_parts)
     if not user_prompt:
-        return {"output": "Usage: /vixynt <prompt> [filename=...] [height=...] [width=...] [input=...for editing]", "messages": messages}
+        return {"output": "Usage: /vixynt <prompt> [filename=...] [height=...] [width=...] [attachments=... for editing]", "messages": messages}
 
     try:
         image = gen_image(
