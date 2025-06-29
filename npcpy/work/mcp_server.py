@@ -31,11 +31,13 @@ import os
 import subprocess
 import json
 import asyncio
-import inspect
+try:
+    import inspect
+except: 
+    pass
 from typing import Optional, Dict, Any, List, Union, Callable, get_type_hints
 # Add these imports to the top of your file
 from functools import wraps
-import inspect
 # Initialize the MCP server
 mcp = FastMCP("npcpy_enhanced")
 
@@ -121,7 +123,6 @@ def register_module_tools(module_name: str) -> None:
             print(f"Registered tool: {func.__name__}")
         except Exception as e:
             print(f"Failed to register {func.__name__}: {e}")
-import inspect
 def load_module_functions(module_name: str) -> List[Callable]:
     """
     Dynamically load functions from a module.

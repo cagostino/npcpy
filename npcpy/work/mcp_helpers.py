@@ -7,7 +7,10 @@ import asyncio
 import os
 import sys
 import json
-import inspect
+try:
+    import inspect
+except: 
+    pass
 from typing import Optional, List, Dict, Any
 from contextlib import AsyncExitStack
 

@@ -11,7 +11,10 @@ import importlib.metadata
 import textwrap
 from typing import Optional, List, Dict, Any, Tuple, Union
 from dataclasses import dataclass, field
-from inspect import isgenerator
+try:
+    from inspect import isgenerator
+except: 
+    pass
 import platform
 try:
     from termcolor import colored

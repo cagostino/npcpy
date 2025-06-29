@@ -9,10 +9,17 @@ import os
 try: 
     import ollama
 except ImportError:
+    
     pass
+except OSError:
+    # Handle case where ollama is not installed or not available
+    print("Ollama is not installed or not available. Please install it to use this feature.")
 try:
     from litellm import completion
 except ImportError:
+    pass
+except OSError:
+    # Handle case where litellm is not installed or not available
     pass
 def handle_streaming_json(api_params):
     """

@@ -17,7 +17,7 @@ import traceback
 import subprocess
 from typing import Any, Dict, List, Optional, Union
 from jinja2 import Environment, FileSystemLoader, Template, Undefined
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 import npcpy as npy 
 
 
@@ -174,7 +174,7 @@ class Jinx:
                 context["llm_response"] = response_text
                 context["results"] = response_text
                 context[step_name] = response_text
-                
+                context['messages'] = response.get('messages')
         elif rendered_engine == "python":
             # Setup execution environment
             exec_globals = {
@@ -239,48 +239,51 @@ class Jinx:
     def from_mcp(cls, mcp_tool):
         """Convert an MCP tool to NPC jinx format"""
         # Extract function info from MCP tool
-        import inspect
-        
-        # Get basic info
-        doc = mcp_tool.__doc__ or ""
-        name = mcp_tool.__name__
-        signature = inspect.signature(mcp_tool)
-        
-        # Extract inputs from signature
-        inputs = []
-        for param_name, param in signature.parameters.items():
-            if param_name != 'self':  # Skip self for methods
-                param_type = param.annotation if param.annotation != inspect.Parameter.empty else None
-                param_default = None if param.default == inspect.Parameter.empty else param.default
-                
-                inputs.append({
-                    "name": param_name,
-                    "type": str(param_type),
-                    "default": param_default
-                })
-        
-        # Create tool data
-        jinx_data = {
-            "jinx_name": name,
-            "description": doc.strip(),
-            "inputs": inputs,
-            "steps": [
-                {
-                    "name": "mcp_function_call",
-                    "engine": "python",
-                    "code": f"""
+        try:
+            import inspect
+
+            # Get basic info
+            doc = mcp_tool.__doc__ or ""
+            name = mcp_tool.__name__
+            signature = inspect.signature(mcp_tool)
+            
+            # Extract inputs from signature
+            inputs = []
+            for param_name, param in signature.parameters.items():
+                if param_name != 'self':  # Skip self for methods
+                    param_type = param.annotation if param.annotation != inspect.Parameter.empty else None
+                    param_default = None if param.default == inspect.Parameter.empty else param.default
+                    
+                    inputs.append({
+                        "name": param_name,
+                        "type": str(param_type),
+                        "default": param_default
+                    })
+            
+            # Create tool data
+            jinx_data = {
+                "jinx_name": name,
+                "description": doc.strip(),
+                "inputs": inputs,
+                "steps": [
+                    {
+                        "name": "mcp_function_call",
+                        "engine": "python",
+                        "code": f"""
 # Call the MCP function
 import {mcp_tool.__module__}
 output = {mcp_tool.__module__}.{name}(
     {', '.join([f'{inp["name"]}=context.get("{inp["name"]}")' for inp in inputs])}
 )
 """
-                }
-            ]
-        }
-        
-        return cls(jinx_data=jinx_data)
-
+                    }
+                ]
+            }
+            
+            return cls(jinx_data=jinx_data)
+            
+        except: 
+            pass    
 def load_jinxs_from_directory(directory):
     """Load all jinxs from a directory"""
     jinxs = []
@@ -382,6 +385,7 @@ class NPC:
         else:   
             self.command_history = None
             self.memory = None
+            self.tables = None
             
             
         # Load jinxs
@@ -455,32 +459,35 @@ class NPC:
     def _setup_db(self):
         """Set up database tables and determine type"""
         try:
-            if "psycopg2" in self.db_conn.__class__.__module__:
-                # PostgreSQL connection
-                cursor = self.db_conn.cursor()
-                cursor.execute(
-                    """
-                    SELECT table_name, obj_description((quote_ident(table_name))::regclass, 'pg_class')
-                    FROM information_schema.tables
-                    WHERE table_schema='public';
-                    """
-                )
-                self.tables = cursor.fetchall()
-                self.db_type = "postgres"
-            elif "sqlite3" in self.db_conn.__class__.__module__:
-                # SQLite connection
-                self.tables = self.db_conn.execute(
-                    "SELECT name, sql FROM sqlite_master WHERE type='table';"
-                ).fetchall()
-                self.db_type = "sqlite"
-            else:
-                self.tables = None
-                self.db_type = None
+
+            dialect = self.db_conn.dialect.name
+
+            with self.db_conn.connect() as conn:
+                if dialect == "postgresql":
+                    result = conn.execute(text("""
+                        SELECT table_name, obj_description((quote_ident(table_name))::regclass, 'pg_class')
+                        FROM information_schema.tables
+                        WHERE table_schema='public';
+                    """))
+                    self.tables = result.fetchall()
+                    self.db_type = "postgres"
+
+                elif dialect == "sqlite":
+                    result = conn.execute(text(
+                        "SELECT name, sql FROM sqlite_master WHERE type='table';"
+                    ))
+                    self.tables = result.fetchall()
+                    self.db_type = "sqlite"
+
+                else:
+                    print(f"Unsupported DB dialect: {dialect}")
+                    self.tables = None
+                    self.db_type = None
+
         except Exception as e:
             print(f"Error setting up database: {e}")
             self.tables = None
-            self.db_type = None
-    
+            self.db_type = None    
     def _load_npc_jinxs(self, jinxs):
         """Load and process NPC-specific jinxs"""
         npc_jinxs = []
@@ -760,7 +767,7 @@ class Team:
         
         # Load sub-teams (subfolders)
         self._load_sub_teams()
-        
+        print(self.jinxs_dict)
     def _load_team_context(self):
         """Load team context from .ctx file"""
 

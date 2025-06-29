@@ -467,7 +467,7 @@ def get_models():
             elif "claude-3-5-sonnet-latest" in m:
                 display_model = "claude-3.5-sonnet"
             elif "gemini-1.5-flash" in m:
-                display_model = "gemini-1.5-flash"  # Handle multiple versions if needed
+                display_model = "gemini-1.5-flash"  # Handle multiple versions if neede
             elif "gemini-2.0-flash-lite-preview-02-05" in m:
                 display_model = "gemini-2.0-flash-lite-preview"
 
@@ -480,7 +480,7 @@ def get_models():
                     "display_name": display_name,
                 }
             )
-
+            print(m, p)
         return jsonify({"models": formatted_models, "error": None})
 
     except Exception as e:

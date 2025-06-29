@@ -520,7 +520,6 @@ def handle_jinx_call(
             context=context
         )
         try:
-            # Clean the response of markdown formatting
             response_text = response.get("response", "{}")
             if isinstance(response_text, str):
                 response_text = (
@@ -575,7 +574,7 @@ def handle_jinx_call(
 
         print("Executing jinx with input values:", end='')
         
-        render_markdown( "\n".join(['\n - ' + key + ': ' + val for key, val in input_values.items()]))
+        render_markdown( "\n".join(['\n - ' + str(key) + ': ' +str(val) for key, val in input_values.items()]))
 
         try:
             jinx_output = jinx.execute(
@@ -585,6 +584,9 @@ def handle_jinx_call(
 
                 messages=messages,
             )
+            if 'llm_response' in jinx_output and 'messages' in jinx_output:
+                if len(jinx_output['llm_response'])>0:                
+                    messages = jinx_output['messages']
         except Exception as e:
             print(f"An error occurred while executing the jinx: {e}")
             print(f"trying again, attempt {attempt+1}")
@@ -622,9 +624,13 @@ def handle_jinx_call(
                     context=context,
                 )
         # process the jinx call
-        if not stream:
+        #print(messages)
+        if not stream and messages[-1]['role'] != 'assistant':
+            # if the jinx has already added a message to the output from a final prompt we dont want to double that
+            
             render_markdown(f""" ## jinx OUTPUT FROM CALLING {jinx_name} \n \n output:{jinx_output['output']}""" )
-        
+
+            
             response = get_llm_response(f"""
                 The user had the following request: {command}. 
                 Here were the jinx outputs from calling {jinx_name}: {jinx_output}
@@ -643,7 +649,7 @@ def handle_jinx_call(
             )
             messages = response['messages']
             response = response.get("response", {})
-        
+            return {'messages':messages, 'output':response}
         return {'messages': messages, 'output': jinx_output}
 
 
@@ -840,7 +846,8 @@ def check_llm_command(
     action_space = ["invoke_jinx",
                      "answer_question", 
                      "pass_to_npc", 
-                     "execute_sequence", ]
+                     ]
+
     if human_in_the_loop:
         action_space.append("request_input")
     prompt += f"""
@@ -851,6 +858,7 @@ def check_llm_command(
     Excluding time-sensitive phenomena or ones that require external data inputs /information,
     most general questions can be answered without any extra jinxs or agent passes.
 
+    
 
     Only use jinxs or pass to other NPCs when it is obvious that the answer needs to be as up-to-date as possible. For example,
         a question about where mount everest is does not necessarily need to be answered by a jinx call or an agent pass.
@@ -866,18 +874,16 @@ def check_llm_command(
     Respond with a JSON object containing:
     - "action": one of {action_space}
     - "jinx_name": : if action is "invoke_jinx": the name of the jinx to use.
-                     else if action is "execute_sequence", a list of jinx names to use.
+                     else if action is "", a list of jinx names to use.
     - "explanation": a brief explanation of why you chose this action.
-    - "npc_name": (if action is "pass_to_npc") the name of the NPC to pass the question , else if action is "execute_sequence", a list of
-                    npcs to pass the question to in order.
-
+    - "npc_name": (if action is "pass_to_npc") the name of the NPC to pass the question , 
 
 
     Return only the JSON object. Do not include any additional text.
 
     The format of the JSON object is:
     {{
-        "action": "invoke_jinx" | "answer_question" | "pass_to_npc" | "execute_sequence" | "request_input",
+        "action": "invoke_jinx" | "answer_question" | "pass_to_npc" |  "request_input",
         "jinx_name": "<jinx_name(s)_if_applicable>",
         "explanation": "<your_explanation>",
         "npc_name": "<npc_name(s)_if_applicable>"
@@ -932,7 +938,8 @@ def check_llm_command(
     action = response_content_parsed.get("action")
     explanation = response_content_parsed.get("explanation")
     jinx_out = response_content_parsed.get('jinx_name', '')
-    jinx_out = '\n Jinx: ' + jinx_out if jinx_out else ''
+    jinx_out = '\n Jinx: ' + str(jinx_out) if jinx_out else ''
+
     render_markdown(f"- Action chosen: {action + jinx_out}\n")
     render_markdown(f"- Explanation given: {explanation}\n")
 
@@ -1071,72 +1078,6 @@ def check_llm_command(
             stream=stream,
         )
 
-    elif action == "execute_sequence":
-        jinx_names = response_content_parsed.get("jinx_name")
-        npc_names = response_content_parsed.get("npc_name")
-
-        # print(npc_names)
-        npcs = []
-        #print(jinx_names, npc_names)
-        if isinstance(npc_names, list): 
-            if len(npc_names) == 0:
-                # if no npcs are specified, just have the npc take care of it itself instead of trying to force it to generate npc names for sequences all the time
-
-                npcs = [npc] * len(jinx_names)
-            if team is None:
-                # try again and append that there are no agents to pass to
-                print('')
-            for npc_name in npc_names:
-                for npc_obj_name, npc_obj in team.npcs.items():
-                    if npc_name in npc_obj_name:
-                        npcs.append(npc_obj)
-                        break
-                if len(npcs) < len(jinx_names):
-                    npcs.append(npc)
-
-        output = ""
-        results_jinx_calls = []
-        if synthesize:
-            # carry out fact extraction
-            print("synthesize not yet implemented")
-
-        if len(jinx_names) > 0:
-            for npc_obj, jinx_name in zip(npcs, jinx_names):
-                result = handle_jinx_call(
-                    command,
-                    jinx_name,
-                    model=model,
-                    provider=provider,
-                    api_url=api_url,
-                    api_key=api_key,
-                    messages=messages,
-                    npc=npc_obj,
-                    stream=stream,
-                )
-                # print(result)
-                results_jinx_calls.append(result)
-                messages = result.get("messages", messages)
-                output += result.get("response", "")
-                # print(results_jinx_calls)
-        else:
-            #print('agent pass')
-            for npc_obj in npcs:
-                result = npc.handle_agent_pass(
-                    npc_obj,
-                    command,
-                    messages=messages,
-                    shared_context=npc.shared_context,
-                )
-
-                messages = result.get("messages", messages)
-                results_jinx_calls.append(result.get("response"))
-                output += f"<{npc_obj.name}>" + result.get("output") + f"</{npc_obj.name}>"
-                # print(messages[-1])
-        # import pdb
-
-        # pdb.set_trace()
-
-        return {"messages": messages, "output": output}
     else:
         print("Error: Invalid action in LLM response")
         return "Error: Invalid action in LLM response"

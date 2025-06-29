@@ -1,20 +1,21 @@
 jinx_name: data_pull
 description: Execute queries on the ~/npcsh_history.db to pull data. The database
   contains only information about conversations and other user-provided data. It does
-  not store any information about individual files.
+  not store any information about individual files. Avoid using percent signs unless absolutely necessary.
 inputs:
 - sql_query
-- interpret: false
+- user_query
+- interpret: true
 steps:
   - engine: python
     code: |
       import pandas as pd
+      query = "{{ sql_query }}"
+      print('HEY', query, type(query))
       try:
-        df = pd.read_sql_query('{{sql_query}}', npc.db_conn)
-      except pandas.errors.DatabaseError as e:
+        df = pd.read_sql_query(query, npc.db_conn)
+      except Exception as e:
         df = pd.DataFrame({'Error': [str(e)]})
-
-
       output = df.to_string()
 
   - engine: natural
@@ -22,6 +23,11 @@ steps:
       {% if interpret %}
       Here is the result of the SQL query:
       ```
-      {{ df.to_string() }}  # Convert DataFrame to string for a nicer display
+      {{ df.to_string()[:10000] }}  # Convert DataFrame to string for a nicer display, avoid  doing more than 10000 in case data pull is huge
       ```
+      Please interpret the results according to the query:
+      {{user_query}}
+      Do not leave any information out it is critical that you directly address the user's full request. 
+
       {% endif %}
+      

@@ -12,6 +12,10 @@ try:
     import chromadb
 except ImportError:
     chromadb = None
+except Exception as e: 
+    print(f"An error occurred: {e}")
+    chromadb = None
+    
 
 def search_similar_texts(
     query: str,

@@ -39,7 +39,8 @@ from npcpy.npc_sysenv import (
     NPCSH_API_URL,
     NPCSH_STREAM_OUTPUT,
     get_system_message,
-    print_and_process_stream_with_markdown
+    print_and_process_stream_with_markdown, 
+    render_markdown
     
 
 )
@@ -52,10 +53,11 @@ from npcpy.npc_compiler import (
 from npcpy.memory.command_history import CommandHistory, save_conversation_message,start_new_conversation
 from typing import Dict, Any, List
 def enter_yap_mode(
+    
+    model: str ,
+    provider: str ,
     messages: list = None,
-    npc = None,
-    model: str = NPCSH_CHAT_MODEL,
-    provider: str = NPCSH_CHAT_PROVIDER,
+    npc = None,    
     team=  None,
     tts_model="kokoro",
     voice="af_heart", 
@@ -99,10 +101,7 @@ def enter_yap_mode(
 
     if messages is None:
         messages = [{"role": "system", "content": system_message}]
-    elif messages and messages[0]["role"] == "system":
-        # Update the existing system message
-        messages[0]["content"] = messages[0]["content"] + " " + concise_instruction
-    else:
+    elif messages is not None and messages[0]['role'] != 'system':
         messages.insert(0, {"role": "system", "content": system_message})
 
     kokoro_pipeline = None
@@ -250,13 +249,7 @@ def enter_yap_mode(
     def speak_text(text):
         speech_queue.put(text)
 
-    def process_input(user_input):
-        nonlocal messages
-
-        # Add user message
-        messages.append({"role": "user", "content": user_input})
-
-        # Process with LLM and collect the ENTIRE response first
+    def process_input(user_input, messages):
         #try:
         full_response = ""
 
@@ -268,15 +261,21 @@ def enter_yap_mode(
             messages=messages,
             model=model,
             provider=provider,
-            stream=stream,
+            stream=False,
         )
         #mport pdb 
         #pdb.set_trace()
         assistant_reply = check["output"]
-        
-        if stream:
+        messages = check['messages']
+        #print(messages)
+        #import pdb 
+        #pdb.set_trace()
+        if stream and not isinstance(assistant_reply,str) and not isinstance(assistant_reply, dict):
             assistant_reply = print_and_process_stream_with_markdown(assistant_reply, model, provider)
-
+        elif isinstance(assistant_reply,dict):
+            # assume its a jinx output, to fix later
+            assistant_reply = assistant_reply.get('output')
+            render_markdown(assistant_reply)
         full_response += assistant_reply
 
         print("\n")  # End the progress display
@@ -288,7 +287,7 @@ def enter_yap_mode(
 
         # Add assistant's response to messages
         messages.append({"role": "assistant", "content": full_response})
-
+        return messages 
         #except Exception as e:
         #    print(f"Error in LLM response: {e}")
         #    speak_text("I'm sorry, there was an error processing your request.")
@@ -479,7 +478,7 @@ def enter_yap_mode(
                     )
 
                             
-                    process_input(user_input)
+                    messages= process_input(user_input, messages)
 
                     message_id = save_conversation_message(
                         command_history,
@@ -504,7 +503,7 @@ def enter_yap_mode(
                     try:
                         transcription = transcription_queue.get_nowait()
                         print(f"\nYou (spoke): {transcription}")
-                        process_input(transcription)
+                        messages = process_input(transcription, messages)
                     except queue.Empty:
                         pass
             else:
@@ -560,11 +559,11 @@ def main():
         provider = sibiji.provider        
     # Enter spool mode
     enter_yap_mode(
+        model,
+        provider,
         messages=None,
         npc=sibiji,
         team = team,
-        model=model,
-        provider=provider,
         files=args.files,
         stream= args.stream.lower() == "true",
     )

@@ -121,6 +121,11 @@ try:
     import chromadb
 except ModuleNotFoundError:
     print("chromadb not installed")
+except OSError as e:
+    print('os error importing chromadb:', e)
+except NameError as e:
+    print('name error importing chromadb:', e)
+    chromadb = None
 import numpy as np
 import os
 from typing import Optional, Dict, List, Union, Tuple
