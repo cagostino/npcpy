@@ -485,6 +485,7 @@ def train_with_dpo(
     else:
         return _train_dpo_torch(traces, config)
 
+
 def run_rl_training(
     tasks: List[Dict[str, Any]],
     agents: List[NPC],
@@ -680,7 +681,191 @@ def _batch_compute_log_probs(model, tokenizer, records, batch_size=16, max_len=1
     return ref_log_probs
 
 
-def train_with_grpo(
+def _tokenize_grpo_torch(tokenizer, prompt, response, max_len=2048):
+    text = f"<|im_start|>user\n{prompt}\n<|im_start|>assistant\n{response}"
+    tokens = tokenizer.encode(text)
+    if tokens[-1] != tokenizer.eos_token_id:
+        tokens.append(tokenizer.eos_token_id)
+    return tokens[:max_len]
+
+
+def _load_torch_model_with_lora(config: RLConfig):
+    """Load base torch model, optionally resume adapter, inject LoRA."""
+    if AutoModelForCausalLM is None or AutoTokenizer is None:
+        raise ImportError("train_with_grpo on torch requires transformers")
+    if LoraConfig is None:
+        raise ImportError("train_with_grpo on torch requires peft")
+
+    model_kwargs = {"trust_remote_code": True, "low_cpu_mem_usage": True}
+    if config.device == "cuda":
+        model_kwargs["device_map"] = "auto"
+    else:
+        model_kwargs["device_map"] = {"": "cpu"}
+
+    if config.use_4bit:
+        if BitsAndBytesConfig is None:
+            raise ImportError("bitsandbytes required for 4-bit")
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=True,
+        )
+    elif config.use_8bit:
+        if BitsAndBytesConfig is None:
+            raise ImportError("bitsandbytes required for 8-bit")
+        model_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+    else:
+        if config.bf16:
+            model_kwargs["torch_dtype"] = torch.bfloat16
+        elif config.fp16:
+            model_kwargs["torch_dtype"] = torch.float16
+        else:
+            model_kwargs["torch_dtype"] = torch.float32
+
+    model = AutoModelForCausalLM.from_pretrained(config.base_model_name, **model_kwargs)
+    tokenizer = AutoTokenizer.from_pretrained(config.base_model_name, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    if config.adapter_path and os.path.isdir(config.adapter_path) and os.path.isfile(
+        os.path.join(config.adapter_path, "adapter_config.json")
+    ):
+        print(f"Loading adapter: {config.adapter_path}")
+        model = PeftModel.from_pretrained(model, config.adapter_path)
+
+    peft_config = LoraConfig(
+        r=config.lora_r,
+        lora_alpha=config.lora_alpha,
+        lora_dropout=config.lora_dropout,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules=config.lora_target_modules,
+    )
+    try:
+        from peft import get_peft_model
+        model = get_peft_model(model, peft_config)
+    except Exception:
+        pass
+
+    return model, tokenizer
+
+
+def _grpo_loss_torch(model, input_ids, advantages, attention_mask=None):
+    """Compute advantage-weighted cross-entropy loss for GRPO."""
+    outputs = model(input_ids, attention_mask=attention_mask)
+    logits = outputs.logits[:, :-1, :]
+    targets = input_ids[:, 1:]
+    log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+    token_log_probs = log_probs.gather(2, targets.unsqueeze(-1)).squeeze(-1)
+    if attention_mask is not None:
+        mask = attention_mask[:, 1:].float()
+        token_log_probs = token_log_probs * mask
+        loss = -(token_log_probs * advantages.unsqueeze(-1)).sum() / (mask.sum() + 1e-8)
+    else:
+        loss = -(token_log_probs * advantages.unsqueeze(-1)).mean()
+    return loss
+
+
+class _GRPODataSet:
+    def __init__(self, data):
+        self._data = data
+    def __len__(self):
+        return len(self._data)
+    def __getitem__(self, idx):
+        return self._data[idx]
+
+
+def _grpo_collate_torch(batch, pad_token_id):
+    tokens_list, advantages = zip(*batch)
+    lengths = [len(t) for t in tokens_list]
+    max_len = max(lengths)
+    input_ids = torch.full((len(batch), max_len), pad_token_id, dtype=torch.long)
+    attention_mask = torch.zeros((len(batch), max_len), dtype=torch.long)
+    for i, tokens in enumerate(tokens_list):
+        input_ids[i, :lengths[i]] = torch.tensor(tokens, dtype=torch.long)
+        attention_mask[i, :lengths[i]] = 1
+    return input_ids, attention_mask, torch.tensor(advantages, dtype=torch.float)
+
+
+def _train_with_grpo_torch(groups: List[Dict[str, Any]], config: RLConfig) -> str:
+    if torch is None:
+        raise ImportError("train_with_grpo on torch requires torch")
+
+    model, tokenizer = _load_torch_model_with_lora(config)
+    os.makedirs(config.adapter_path, exist_ok=True)
+
+    processed = []
+    for group in groups:
+        prompt = group["prompt"]
+        responses = group["responses"]
+        if len(responses) < 2:
+            continue
+        rewards = [r for _, r in responses]
+        mean_r = sum(rewards) / len(rewards)
+        std_r = (sum((r - mean_r) ** 2 for r in rewards) / len(rewards)) ** 0.5 + 1e-6
+        for response, reward in responses:
+            advantage = (reward - mean_r) / std_r
+            tokens = _tokenize_grpo_torch(tokenizer, prompt, response, max_len=config.max_length)
+            processed.append((tokens, float(advantage)))
+
+    if len(processed) < 10:
+        print("Not enough GRPO data.")
+        return None
+
+    from torch.utils.data import DataLoader
+
+    dataset = _GRPODataSet(processed)
+    loader = DataLoader(
+        dataset,
+        batch_size=config.group_size,
+        shuffle=True,
+        collate_fn=lambda batch: _grpo_collate_torch(batch, tokenizer.pad_token_id),
+    )
+
+    device = next(model.parameters()).device
+
+    optimizer = torch.optim.AdamW(
+        [p for p in model.parameters() if p.requires_grad],
+        lr=config.learning_rate,
+    )
+
+    iters_per_epoch = max(1, len(processed) // config.group_size)
+    total_steps = iters_per_epoch * config.num_train_epochs
+
+    model.train()
+    global_step = 0
+    for epoch in range(config.num_train_epochs):
+        for batch_idx, (input_ids, attention_mask, advantages) in enumerate(loader):
+            input_ids = input_ids.to(device)
+            attention_mask = attention_mask.to(device)
+            advantages = advantages.to(device)
+
+            loss = _grpo_loss_torch(model, input_ids, advantages, attention_mask)
+            loss.backward()
+
+            if (global_step + 1) % config.gradient_accumulation_steps == 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+
+            global_step += 1
+            if global_step % config.logging_steps == 0:
+                print(f"GRPO | epoch={epoch} step={global_step}/{total_steps} loss={loss.item():.4f}")
+
+            if global_step % config.save_steps == 0:
+                ckpt_dir = os.path.join(config.adapter_path, f"checkpoint-{global_step}")
+                os.makedirs(ckpt_dir, exist_ok=True)
+                model.save_pretrained(ckpt_dir)
+                tokenizer.save_pretrained(ckpt_dir)
+
+    model.save_pretrained(config.adapter_path)
+    tokenizer.save_pretrained(config.adapter_path)
+    print(f"GRPO adapter saved to {config.adapter_path}")
+    return config.adapter_path
+
+
+def _train_with_grpo_mlx(
     groups: List[Dict[str, Any]],
     config: Optional[RLConfig] = None
 ) -> str:
@@ -805,6 +990,23 @@ def train_with_grpo(
     _save_adapter_config(config.adapter_path, mlx_name, config)
     print(f"GRPO adapter saved to {config.adapter_path}")
     return config.adapter_path
+
+
+def train_with_grpo(
+    groups: List[Dict[str, Any]],
+    config: Optional[RLConfig] = None
+) -> str:
+    """Train with GRPO on MLX or torch.
+
+    groups = [{"prompt": str, "responses": [(response_str, reward), ...]}, ...]
+    """
+    if config is None:
+        config = RLConfig()
+
+    if config.device == "mlx":
+        return _train_with_grpo_mlx(groups, config)
+    else:
+        return _train_with_grpo_torch(groups, config)
 
 
 def train_with_ppo(

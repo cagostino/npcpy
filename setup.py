@@ -46,7 +46,8 @@ base_requirements = [
     "redis",
     "psycopg2-binary",
     "flask_sse",
-    "mcp", 
+    "mcp",
+    "httpx>=0.27.0,<0.28.0",
 ]
 
 
@@ -84,7 +85,7 @@ extra_files = package_files("npcpy/npc_team/")
 
 setup(
     name="npcpy",
-    version="2.1.2",
+    version="2.1.3",
     packages=find_packages(exclude=["tests*"]),
     install_requires=base_requirements,  
     extras_require={
