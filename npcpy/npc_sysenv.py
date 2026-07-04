@@ -145,90 +145,49 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
     if not airplane_mode:
         timeout_seconds = 3.5
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            if "ANTHROPIC_API_KEY" in env_vars or os.environ.get("ANTHROPIC_API_KEY"):
-                try:
-                    import anthropic
+        provider_model_attrs = {
+            "anthropic": ("ANTHROPIC_API_KEY", "anthropic_models"),
+            "moonshot": ("MOONSHOT_API_KEY", "moonshot_models"),
+            "openai": ("OPENAI_API_KEY", "open_ai_chat_completion_models"),
+            "gemini": ("GEMINI_API_KEY", "gemini_models"),
+            "deepseek": ("DEEPSEEK_API_KEY", "deepseek_models"),
+            "groq": ("GROQ_API_KEY", "groq_models"),
+            "mistral": ("MISTRAL_API_KEY", "mistral_chat_models"),
+            "xai": ("XAI_API_KEY", "xai_models"),
+            "perplexity": ("PERPLEXITY_API_KEY", "perplexity_models"),
+            "together": ("TOGETHER_API_KEY", "together_ai_models"),
+            "fireworks_ai": ("FIREWORKS_API_KEY", "fireworks_ai_models"),
+            "cerebras": ("CEREBRAS_API_KEY", "cerebras_models"),
+            "ai21": ("AI21_API_KEY", "ai21_models"),
+            "azure": ("AZURE_API_KEY", "azure_models"),
+            "cohere": ("COHERE_API_KEY", "cohere_models"),
+            "openrouter": ("OPENROUTER_API_KEY", "openrouter_models"),
+            "novita": ("NOVITA_API_KEY", "novita_models"),
+            "hyperbolic": ("HYPERBOLIC_API_KEY", "hyperbolic_models"),
+            "sambanova": ("SAMBANOVA_API_KEY", "sambanova_models"),
+            "nebius": ("NEBIUS_API_KEY", "nebius_models"),
+        }
 
-                    def fetch_anthropic_models():
-                        client = anthropic.Anthropic(api_key=env_vars.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
+        try:
+            import litellm
+        except Exception as e:
+            logging.info(f"litellm not available for model listing: {e}")
+            litellm = None
 
-                        return client.models.list()
-
-                    future = executor.submit(fetch_anthropic_models)
-                    models = future.result(timeout=timeout_seconds) 
-
-                    for model in models.data:
-                        available_models[model.id] = 'anthropic'
-
-                except (ImportError, concurrent.futures.TimeoutError, Exception) as e:
-                    logging.info(f"Anthropic models not indexed or timed out: {e}")
-
-            if "OPENAI_API_KEY" in env_vars or os.environ.get("OPENAI_API_KEY"):
-                try:
-                    import openai
-
-                    def fetch_openai_models():
-                        openai.api_key = env_vars.get("OPENAI_API_KEY", None) or os.environ.get("OPENAI_API_KEY", None)
-                        return openai.models.list()
-
-                    future = executor.submit(fetch_openai_models)
-                    models = future.result(timeout=timeout_seconds) 
-
-                    for model in models.data:
-                        if (
-                            (
-                                "gpt" in model.id
-                                or "o1" in model.id
-                                or "o3" in model.id
-                                or "chat" in model.id
-                            )
-                            and "audio" not in model.id
-                            and "realtime" not in model.id
-                        ):
-                            available_models[model.id] = "openai"
-                except (ImportError, openai.APIError, concurrent.futures.TimeoutError, Exception) as e:
-                    logging.info(f"OpenAI models not indexed or timed out: {e}")
-
-            if "GEMINI_API_KEY" in env_vars or os.environ.get("GEMINI_API_KEY"):
-                try:
-                    from google import genai
-                    def fetch_gemini_models():
-                        client = genai.Client(api_key=env_vars.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY"))
-                        found_models = []
-
-                        target_models = [
-                            'gemini-2.5-pro', 
-                            'gemini-2.5-flash', 
-                            'gemini-2.0-flash', 
-                            'gemini-2.0-pro', 
-                            'gemini-1.5-pro', 
-                            'gemini-1.5-flash'
-                            'gemini-3-flash-preview',
-                            'gemini-3.1-pro-preview',
-                        ]
-
-                        for m in client.models.list():
-                            for action in m.supported_actions:
-                                if action == "generateContent":
-                                    if 'models/' in m.name:
-                                        model_name_part = m.name.split('/')[1]  
-
-                                        if any(model in model_name_part for model in target_models):
-                                            found_models.append(model_name_part)
-                        return set(found_models)
-                    future = executor.submit(fetch_gemini_models)
-                    models = future.result(timeout=timeout_seconds) 
-
-                    for model in models: 
-                        if "gemini" in model:
-                            available_models[model] = "gemini"
-                except (ImportError, concurrent.futures.TimeoutError, Exception) as e:
-                    logging.info(f"Gemini models not indexed or timed out: {e}")
-
-            if "DEEPSEEK_API_KEY" in env_vars or os.environ.get("DEEPSEEK_API_KEY"):
-                available_models['deepseek-chat'] = 'deepseek'
-                available_models['deepseek-reasoner'] = 'deepseek'        
+        for provider, (env_var, attr_name) in provider_model_attrs.items():
+            if env_var not in env_vars and not os.environ.get(env_var):
+                continue
+            if litellm is None:
+                continue
+            try:
+                model_set = getattr(litellm, attr_name, None)
+                if not model_set:
+                    continue
+                for model_id in model_set:
+                    clean_id = model_id.split("/")[-1] if "/" in model_id else model_id
+                    available_models[clean_id] = provider
+            except Exception as e:
+                logging.info(f"{provider.capitalize()} models not indexed: {e}")
     try:
         import ollama
         timeout_seconds = 0.5 

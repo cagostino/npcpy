@@ -19,7 +19,6 @@ import asyncio
 import argparse
 from typing import Optional, List, Dict, Callable, Any
 from contextlib import AsyncExitStack
-
 import io
 from flask_cors import CORS
 import os
@@ -35,7 +34,6 @@ except ImportError:
     ClientSession = None
     StdioServerParameters = None
     stdio_client = None
-
 from PIL import Image
 from PIL import ImageFile
 from io import BytesIO
@@ -53,9 +51,7 @@ from jinja2 import Environment, FileSystemLoader, Template, Undefined, DictLoade
 class SilentUndefined(Undefined):
     def _fail_with_undefined_error(self, *args, **kwargs):
         return ""
-
 from npcpy.db import generate_message_id, ensure_engine
-
 from npcpy.memory.knowledge_graph import (
     find_similar_facts_chroma,
 )
@@ -64,16 +60,12 @@ from npcpy.memory.search import execute_rag_command
 from npcpy.data.load import load_file_contents
 from npcpy.data.web import search_web
 from npcpy.data.image import capture_screenshot
-
 import base64
 import shutil
 import uuid
-
 from npcpy.llm_funcs import gen_image, gen_video, breathe                                                                                                                                                                
-
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
-
 from npcpy.npc_sysenv import (
     get_data_dir, get_models_dir,
     get_images_dir, get_videos_dir,
@@ -83,13 +75,11 @@ from npcpy.npc_sysenv import (
     team_sync_resolve, team_sync_commit, team_sync_diff,
 )
 from npcpy.npc_compiler import  Jinx, NPC, Team, load_jinxes_from_directory, build_jinx_tool_catalog, initialize_npc_project, load_yaml_file
-
 from npcpy.llm_funcs import (
     get_llm_response, check_llm_command
 )
 from npcpy.gen.embeddings import get_embeddings
 from termcolor import cprint
-
 from npcpy.tools import auto_tools
 from npcpy.streaming import (
     StreamConfig, StreamEvent,
@@ -104,19 +94,15 @@ from npcpy.streaming import (
     create_tool_agent_stream,
     create_jinx_stream,
 )
-
 import json
 import os
 from pathlib import Path
 from flask_cors import CORS
-
 cancellation_flags = {}
 cancellation_lock = threading.Lock()
-
 # Pending permission requests from /api/stream to the Rust/frontend shell.
 permission_requests = {}
 permission_lock = threading.Lock()
-
 class ServeState:
     """Minimal server-side execution context for jinxes and tools.
     Minimal server-side execution context for jinxes and tools."""
@@ -131,7 +117,6 @@ class ServeState:
         search_provider=None,
         embedding_model=None,
         embedding_provider=None,
-        
     ):
         self.npc = npc
         self.team = team
@@ -142,21 +127,17 @@ class ServeState:
         self.search_provider = search_provider
         self.embedding_model = embedding_model
         self.embedding_provider = embedding_provider
-
-
 def _setup_stream(data):
     stream_id = data.get("streamId") or str(uuid.uuid4())
     with cancellation_lock:
         cancellation_flags[stream_id] = False
     return stream_id
-
 def _cleanup_stream(stream_id, mcp_state_key=None):
     with cancellation_lock:
         cancellation_flags.pop(stream_id, None)
     if mcp_state_key and hasattr(app, 'mcp_clients') and mcp_state_key in app.mcp_clients:
         print(f"[CLEANUP] Removing MCP state for {mcp_state_key}")
         del app.mcp_clients[mcp_state_key]
-
 def _serialize_jinxes_from_dir(directory):
     jinx_data = []
     for jinx in load_jinxes_from_directory(directory):
@@ -167,7 +148,6 @@ def _serialize_jinxes_from_dir(directory):
             d["source_path"] = jinx._source_path
         jinx_data.append(d)
     return jinx_data
-
 def normalize_path_for_db(path_str):
     """
     Normalize a path for consistent database storage/querying.
@@ -179,7 +159,6 @@ def normalize_path_for_db(path_str):
     normalized = path_str.replace('\\', '/')
     normalized = normalized.rstrip('/')
     return normalized
-
 class MCPClientNPC:
     def __init__(self, debug: bool = True):
         self.debug = debug
@@ -189,11 +168,9 @@ class MCPClientNPC:
         self.tool_map: Dict[str, Callable] = {}
         self.server_script_path: Optional[str] = None
         self.server_spec = None
-
     def _log(self, message: str, color: str = "cyan") -> None:
         if self.debug:
             cprint(f"[MCP Client] {message}", color, file=sys.stderr)
-
     def _get_loop(self):
         """Get or create a usable event loop for the current thread."""
         try:
@@ -205,7 +182,6 @@ class MCPClientNPC:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         return loop
-
     def _cleanup_sync(self):
         """Clean up any existing session and exit stack synchronously."""
         if self._exit_stack is not None:
@@ -218,10 +194,8 @@ class MCPClientNPC:
         self.session = None
         self.available_tools_llm = []
         self.tool_map = {}
-
     async def _connect_async(self, server_spec) -> None:
         """Connect to an MCP server.
-
         server_spec can be:
           - str: path to a script file (legacy)
           - str: command string starting with python/npx/uvx/node/docker
@@ -236,11 +210,9 @@ class MCPClientNPC:
                 server_spec = {"command": parts[0], "args": parts[1:]}
             else:
                 server_spec = {"path": server_spec}
-
         self.server_spec = server_spec
         extra_env = server_spec.get("env", {})
         env = {**os.environ, **extra_env}
-
         if self.session and self._exit_stack:
             try:
                 await self._exit_stack.aclose()
@@ -248,9 +220,7 @@ class MCPClientNPC:
                 self._log(f"Old session cleanup warning: {e}", "yellow")
             self._exit_stack = None
             self.session = None
-
         self._exit_stack = AsyncExitStack()
-
         if "url" in server_spec:
             from mcp.client.sse import sse_client
             url = server_spec["url"]
@@ -258,7 +228,6 @@ class MCPClientNPC:
             self.server_script_path = url
             sse_transport = await self._exit_stack.enter_async_context(sse_client(url))
             self.session = await self._exit_stack.enter_async_context(ClientSession(*sse_transport))
-
         elif "command" in server_spec:
             command = server_spec["command"]
             args = server_spec.get("args", [])
@@ -271,21 +240,18 @@ class MCPClientNPC:
             )
             stdio_transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
             self.session = await self._exit_stack.enter_async_context(ClientSession(*stdio_transport))
-
         elif "path" in server_spec:
             abs_path = os.path.abspath(os.path.expanduser(server_spec["path"]))
             if not os.path.exists(abs_path):
                 raise FileNotFoundError(f"MCP server script not found: {abs_path}")
             self.server_script_path = abs_path
             self._log(f"Attempting to connect to MCP server: {abs_path}")
-
             if abs_path.endswith('.py'):
                 cmd_parts = [sys.executable, abs_path]
             elif os.access(abs_path, os.X_OK):
                 cmd_parts = [abs_path]
             else:
                 raise ValueError(f"Unsupported MCP server script type or not executable: {abs_path}")
-
             server_params = StdioServerParameters(
                 command=cmd_parts[0],
                 args=[abs_path],
@@ -294,16 +260,12 @@ class MCPClientNPC:
             )
             stdio_transport = await self._exit_stack.enter_async_context(stdio_client(server_params))
             self.session = await self._exit_stack.enter_async_context(ClientSession(*stdio_transport))
-
         else:
             raise ValueError(f"Invalid MCP server spec: must have 'path', 'command', or 'url'. Got: {server_spec}")
-
         await self.session.initialize()
-
         response = await self.session.list_tools()
         self.available_tools_llm = []
         self.tool_map = {}
-
         if response.tools:
             for mcp_tool in response.tools:
                 tool_def = {
@@ -315,7 +277,6 @@ class MCPClientNPC:
                     }
                 }
                 self.available_tools_llm.append(tool_def)
-
                 def make_tool_func(tool_name_closure):
                     async def tool_func(**kwargs):
                         if not self.session:
@@ -335,18 +296,14 @@ class MCPClientNPC:
                         except Exception as e:
                             self._log(f"Tool {tool_name_closure} error: {e}", "red")
                             return {"error": str(e)}
-
                     def sync_wrapper(**kwargs):
                         self._log(f"Sync wrapper called for {tool_name_closure}")
                         loop = self._get_loop()
                         return loop.run_until_complete(tool_func(**kwargs))
-
                     return sync_wrapper
-
                 self.tool_map[mcp_tool.name] = make_tool_func(mcp_tool.name)
         tool_names = list(self.tool_map.keys())
         self._log(f"Connection successful. Tools: {', '.join(tool_names) if tool_names else 'None'}")
-
     def connect_sync(self, server_spec) -> bool:
         """Connect synchronously. server_spec: str (path) or dict with path/command/url."""
         self._cleanup_sync()
@@ -358,10 +315,8 @@ class MCPClientNPC:
             cprint(f"MCP connection failed: {e}", "red", file=sys.stderr)
             self._cleanup_sync()
             return False
-
     def disconnect_sync(self):
         self._cleanup_sync()
-
     def is_connected(self) -> bool:
         """Check if the session is still alive."""
         if self.session is None or self._exit_stack is None:
@@ -373,7 +328,6 @@ class MCPClientNPC:
         except Exception as e:
             self._log(f"Health check failed: {e}", "yellow")
             return False
-
 def get_llm_response_with_handling(prompt, npc,model, provider, messages, tools, stream, team, context=None, **kwargs):
     """Unified LLM response with basic exception handling (inlined from corca to avoid that dependency)."""
     try:
@@ -412,27 +366,21 @@ def get_llm_response_with_handling(prompt, npc,model, provider, messages, tools,
             print(f"[LLM ERROR] Second attempt failed: {e2}")
             traceback.print_exc()
             raise
-    
 class MCPServerManager:
     """
     Simple in-process tracker for launching/stopping MCP servers.
     Currently uses subprocess.Popen to start a Python stdio MCP server script.
     """
-
     def __init__(self):
         self._procs = {}
         self._lock = threading.Lock()
-
     def start(self, server_path: str, env_vars: dict = None):
         server_path = os.path.expanduser(server_path)
-
         proc_env = os.environ.copy()
         if env_vars:
             proc_env.update(env_vars)
-
         is_command = _is_command_string(server_path)
         stripped = server_path.strip()
-
         if is_command:
             import shlex
             cmd = shlex.split(stripped)
@@ -445,12 +393,10 @@ class MCPServerManager:
             cmd = [sys.executable, abs_path]
             key = abs_path
             cwd = os.path.dirname(abs_path) or "."
-
         with self._lock:
             existing = self._procs.get(key)
             if existing and existing.poll() is None:
                 return {"status": "running", "pid": existing.pid, "serverPath": key}
-
             proc = subprocess.Popen(
                 cmd,
                 cwd=cwd,
@@ -460,13 +406,11 @@ class MCPServerManager:
             )
             self._procs[key] = proc
             return {"status": "started", "pid": proc.pid, "serverPath": key}
-
     def _resolve_key(self, server_path: str) -> str:
         """Resolve server_path to the key used in _procs."""
         if _is_command_string(server_path):
             return server_path.strip()
         return os.path.abspath(os.path.expanduser(server_path))
-
     def stop(self, server_path: str):
         key = self._resolve_key(server_path)
         with self._lock:
@@ -481,7 +425,6 @@ class MCPServerManager:
                     proc.kill()
             del self._procs[key]
             return {"status": "stopped", "serverPath": key}
-
     def status(self, server_path: str):
         key = self._resolve_key(server_path)
         with self._lock:
@@ -495,7 +438,6 @@ class MCPServerManager:
                 "pid": proc.pid,
                 "returncode": None if running else proc.returncode,
             }
-
     def running(self):
         with self._lock:
             return {
@@ -506,49 +448,35 @@ class MCPServerManager:
                 }
                 for path, proc in self._procs.items()
             }
-
 mcp_server_manager = MCPServerManager()
-
 def get_project_npc_directory(current_path=None):
     """
     Get the project NPC directory based on the current path
-    
     Args:
         current_path: The current path where project NPCs should be looked for
-        
     Returns:
         Path to the project's npc_team directory
     """
     if current_path:
         return os.path.join(current_path, "npc_team")
     else:
-        
         return os.path.abspath("./npc_team")
-
 def load_project_env(current_path):
     """
     Load environment variables from a project's .env file
-    
     Args:
         current_path: The current project directory path
-    
     Returns:
         Dictionary of environment variables that were loaded
     """
     if not current_path:
         return {}
-    
     env_path = os.path.join(current_path, ".env")
     loaded_vars = {}
-    
     if os.path.exists(env_path):
         print(f"Loading project environment from {env_path}")
-        
-        
         success = load_dotenv(env_path, override=True)
-        
         if success:
-            
             with open(env_path, "r") as f:
                 for line in f:
                     line = line.strip()
@@ -556,15 +484,12 @@ def load_project_env(current_path):
                         if "=" in line:
                             key, value = line.split("=", 1)
                             loaded_vars[key.strip()] = value.strip().strip("\"'")
-            
             print(f"Loaded {len(loaded_vars)} variables from project .env file")
         else:
             print(f"Failed to load environment variables from {env_path}")
     else:
         print(f"No .env file found at {env_path}")
-    
     return loaded_vars
-
 def _load_kg_from_yaml_stores(store_paths):
     """Aggregate .knowledge.yaml stores from explicit paths into DataFrames."""
     from npcpy.memory.knowledge_store import KnowledgeStore
@@ -604,19 +529,13 @@ def _load_kg_from_yaml_stores(store_paths):
     facts_df = pd.DataFrame(facts) if facts else pd.DataFrame(columns=['statement', 'source_text', 'type', 'generation', 'memory_id', 'npc_name', 'team_name'])
     links_df = pd.DataFrame(links) if links else pd.DataFrame(columns=['source', 'target', 'link_type', 'weight'])
     return concepts_df, facts_df, links_df
-
-
 def _load_kg_from_yaml(workspace):
     """DEPRECATED — kept for backward compat until callers migrate to storePaths."""
     return _load_kg_from_yaml_stores([])
-
-
 def load_kg_data(store_paths=None):
     """Load KG data from a specific list of .knowledge.yaml store directories.
     store_paths is a list of directory paths."""
     return _load_kg_from_yaml_stores(store_paths or [])
-
-
 def _get_registered_stores():
     """Read the configured KG registry YAML and return store directory paths."""
     registry_path = app.config.get('KG_REGISTRY_PATH')
@@ -632,15 +551,11 @@ def _get_registered_stores():
         return [str(s) for s in stores if isinstance(s, str) and s]
     except Exception:
         return []
-
-
 app = Flask(__name__)
 app.config["REDIS_URL"] = "redis://localhost:6379"
 app.config['DB_PATH'] = ''
 app.jinx_conversation_contexts ={}
-
 redis_client = redis.Redis(host="localhost", port=6379, decode_responses=True) if redis else None
-
 available_models = {}
 CORS(
     app,
@@ -649,8 +564,6 @@ CORS(
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     supports_credentials=True,
 )
-
-
 def _is_command_string(s: str) -> bool:
     """Check if a string is a command (python/npx/uvx/node/docker) vs a file path."""
     stripped = s.strip()
@@ -659,28 +572,21 @@ def _is_command_string(s: str) -> bool:
     first_word = stripped.split()[0]
     basename = os.path.basename(first_word)
     return basename in ('python', 'python3', 'npx', 'uvx', 'node', 'docker') or ' -m ' in stripped
-
 def get_db_connection():
     engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
     return engine
-
 def get_db_session():
     engine = get_db_connection()
     Session = sessionmaker(bind=engine)
     return Session()
-
-
 class CustomJSONEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, (datetime.date, datetime.datetime)):
             return obj.isoformat()
         return super().default(obj)
-
-
 def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=False):
     """
     Resolve an MCP server path.
-
     Supports both file paths and command strings:
       - Command strings (python -m ..., npx ..., etc.) are passed through as-is
       - File paths are resolved to absolute paths
@@ -689,11 +595,9 @@ def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=
     if explicit_path:
         if _is_command_string(explicit_path):
             return explicit_path.strip()
-
         abs_path = os.path.abspath(os.path.expanduser(explicit_path))
         if os.path.exists(abs_path):
             return abs_path
-
     team_path = None
     if current_path:
         candidate = os.path.join(current_path, "npc_team")
@@ -701,9 +605,7 @@ def resolve_mcp_server_path(current_path=None, explicit_path=None, force_global=
             team_path = candidate
     if team_path:
         return f"{sys.executable} -m npcpy.mcp_server --team {team_path}"
-
     return f"{sys.executable} -m npcpy.mcp_server"
-
 extension_map = {
     "PNG": "images",
     "JPG": "images",
@@ -738,12 +640,10 @@ def load_npc_by_name_and_source(name, source, current_path=None):
     Loads an NPC from either project or global directory based on source.
     Database features are opt-in via NPC.initialize_db(); no DB connection is
     opened implicitly here.
-
     Args:
         name: The name of the NPC to load
         source: Either 'project' or 'global' indicating where to look for the NPC
         current_path: The current path where project NPCs should be looked for
-
     Returns:
         NPC object or None if not found
     """
@@ -753,7 +653,6 @@ def load_npc_by_name_and_source(name, source, current_path=None):
         directories = [
             app.config['user_npc_directory'],
         ]
-
     for npc_directory in directories:
         if not npc_directory or not os.path.exists(npc_directory):
             continue
@@ -771,23 +670,17 @@ def load_npc_by_name_and_source(name, source, current_path=None):
         except Exception as e:
             print(f"Error loading team from {npc_directory} while resolving NPC {name}: {str(e)}")
             continue
-
     print(f"NPC file not found: {name}.npc in {directories}")
     return None
-
-
 @app.route('/api/kg/generations')
 def list_generations():
     return jsonify({"generations": [0]})
-
 @app.route('/api/kg/graph')
 def get_graph_data():
     store_paths = request.args.getlist('storePaths')
     concepts_df, facts_df, links_df = load_kg_data(store_paths)
-
     nodes = []
     nodes.extend([{'id': name, 'type': 'concept'} for name in concepts_df['name']])
-
     has_memory_id = 'memory_id' in facts_df.columns
     for _, row in facts_df.iterrows():
         node = {'id': row['statement'], 'type': 'fact'}
@@ -799,11 +692,8 @@ def get_graph_data():
             except Exception:
                 pass
         nodes.append(node)
-
     links = [{'source': row['source'], 'target': row['target']} for _, row in links_df.iterrows()]
-
     return jsonify(graph={'nodes': nodes, 'links': links})
-
 @app.route('/api/kg/network-stats')
 def get_network_stats():
     store_paths = request.args.getlist('storePaths')
@@ -820,7 +710,6 @@ def get_network_stats():
         'avg_degree': np.mean(list(degrees.values())) if degrees else 0, 'node_degrees': degrees
     }
     return jsonify(stats=stats)
-
 @app.route('/api/kg/cooccurrence')
 def get_cooccurrence_network():
     store_paths = request.args.getlist('storePaths')
@@ -848,7 +737,6 @@ def get_cooccurrence_network():
     nodes = [{'id': node, 'type': 'concept', 'community': node_to_community.get(node, 0)} for node in G_cooccur.nodes()]
     links = [{'source': u, 'target': v, 'weight': d['weight']} for u, v, d in G_cooccur.edges(data=True)]
     return jsonify(network={'nodes': nodes, 'links': links})
-
 @app.route('/api/kg/centrality')
 def get_centrality_data():
     store_paths = request.args.getlist('storePaths')
@@ -860,7 +748,6 @@ def get_centrality_data():
             G.add_edge(link['source'], link['target'])
     concept_degree = {node: cent for node, cent in nx.degree_centrality(G).items() if node in concepts_df['name'].values}
     return jsonify(centrality={'degree': concept_degree})
-
 @app.route('/api/kg/search')
 def search_kg():
     """Search facts and concepts by keyword"""
@@ -869,13 +756,10 @@ def search_kg():
         store_paths = request.args.getlist('storePaths')
         search_type = request.args.get('type', 'both')
         limit = request.args.get('limit', 50, type=int)
-
         if not q:
             return jsonify({"error": "Query parameter 'q' is required"}), 400
-
         concepts_df, facts_df, links_df = load_kg_data(store_paths)
         results = {"facts": [], "concepts": [], "query": q}
-
         if search_type in ('both', 'fact'):
             for _, row in facts_df.iterrows():
                 statement = str(row.get('statement', '')).lower()
@@ -890,7 +774,6 @@ def search_kg():
                     })
                     if len(results["facts"]) >= limit:
                         break
-
         if search_type in ('both', 'concept'):
             for _, row in concepts_df.iterrows():
                 name = str(row.get('name', '')).lower()
@@ -904,13 +787,10 @@ def search_kg():
                     })
                     if len(results["concepts"]) >= limit:
                         break
-
         return jsonify(results)
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route('/api/kg/embed', methods=['POST'])
 def embed_kg_facts():
     """Embed existing facts from YAML stores to Chroma for semantic search"""
@@ -918,36 +798,26 @@ def embed_kg_facts():
         data = request.get_json() or {}
         store_paths = data.get('storePaths', [])
         batch_size = data.get('batch_size', 10)
-
         _, facts_df, _ = load_kg_data(store_paths)
-
         if facts_df.empty:
             return jsonify({"message": "No facts to embed", "count": 0})
-
         chroma_db_path = app.config.get('CHROMA_DB_PATH')
         if not chroma_db_path:
             return jsonify({"error": "CHROMA_DB_PATH not configured"}), 500
-
         from npcpy.memory.knowledge_graph import store_fact_with_embedding
         import hashlib
-
         embedded_count = 0
         skipped_count = 0
-
         statements = facts_df['statement'].dropna().tolist()
-
         for i in range(0, len(statements), batch_size):
             batch = statements[i:i + batch_size]
-
             try:
                 embeddings = get_embeddings(batch)
             except Exception as e:
                 print(f"Failed to get embeddings for batch {i}: {e}")
                 continue
-
             for j, statement in enumerate(batch):
                 fact_id = hashlib.md5(statement.encode()).hexdigest()
-
                 try:
                     existing = chroma_collection.get(ids=[fact_id])
                     if existing and existing.get('ids'):
@@ -955,31 +825,26 @@ def embed_kg_facts():
                         continue
                 except Exception:
                     pass
-
                 row = facts_df[facts_df['statement'] == statement].iloc[0] if len(facts_df[facts_df['statement'] == statement]) > 0 else None
                 metadata = {
                     "generation": int(row.get('generation', 0)) if row is not None and pd.notna(row.get('generation')) else 0,
                     "origin": str(row.get('origin', '')) if row is not None else '',
                     "type": str(row.get('type', '')) if row is not None else '',
                 }
-
                 result = store_fact_with_embedding(
                     chroma_collection, statement, metadata, embeddings[j]
                 )
                 if result:
                     embedded_count += 1
-
         return jsonify({
             "message": f"Embedded {embedded_count} facts, skipped {skipped_count} existing",
             "embedded": embedded_count,
             "skipped": skipped_count,
             "total_facts": len(statements)
         })
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route('/api/kg/search/semantic')
 def search_kg_semantic():
     """Semantic search for facts using vector similarity"""
@@ -987,10 +852,8 @@ def search_kg_semantic():
         q = request.args.get('q', '').strip()
         store_paths = request.args.getlist('storePaths')
         limit = request.args.get('limit', 10, type=int)
-
         if not q:
             return jsonify({"error": "Query parameter 'q' is required"}), 400
-
         chroma_db_path = app.config.get('CHROMA_DB_PATH')
         if not chroma_db_path:
             return jsonify({"error": "CHROMA_DB_PATH not configured", "facts": [], "query": q}), 500
@@ -1002,7 +865,6 @@ def search_kg_semantic():
                 "facts": [],
                 "query": q
             }), 200
-
         similar_facts = find_similar_facts_chroma(
             chroma_collection,
             q,
@@ -1010,7 +872,6 @@ def search_kg_semantic():
             n_results=limit,
             metadata_filter=None
         )
-
         results = {
             "facts": [
                 {
@@ -1024,13 +885,10 @@ def search_kg_semantic():
             "query": q,
             "total": len(similar_facts)
         }
-
         return jsonify(results)
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route('/api/kg/facts')
 def get_kg_facts():
     """Get facts from YAML stores."""
@@ -1038,9 +896,7 @@ def get_kg_facts():
         store_paths = request.args.getlist('storePaths')
         limit = request.args.get('limit', 100, type=int)
         offset = request.args.get('offset', 0, type=int)
-
         _, facts_df, _ = load_kg_data(store_paths)
-
         facts = []
         for i, row in facts_df.iloc[offset:offset+limit].iterrows():
             mid = row.get('memory_id') if 'memory_id' in facts_df.columns else None
@@ -1056,27 +912,22 @@ def get_kg_facts():
                 "origin": row.get('origin'),
                 "memory_id": mid_int,
             })
-
         return jsonify({
             "facts": facts,
             "total": len(facts_df),
             "offset": offset,
             "limit": limit
         })
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route('/api/kg/concepts')
 def get_kg_concepts():
     """Get concepts from YAML stores."""
     try:
         store_paths = request.args.getlist('storePaths')
         limit = request.args.get('limit', 100, type=int)
-
         concepts_df, _, _ = load_kg_data(store_paths)
-
         concepts = []
         for _, row in concepts_df.head(limit).iterrows():
             concepts.append({
@@ -1085,17 +936,13 @@ def get_kg_concepts():
                 "generation": row.get('generation'),
                 "origin": row.get('origin')
             })
-
         return jsonify({
             "concepts": concepts,
             "total": len(concepts_df)
         })
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route('/api/kg/node', methods=['POST'])
 def add_kg_node():
     """Add a new concept or fact to the selected YAML stores."""
@@ -1105,12 +952,10 @@ def add_kg_node():
         node_type = data.get('type', 'concept')
         properties = data.get('properties', {})
         store_paths = data.get('storePaths', [])
-
         if not node_id:
             return jsonify({"error": "Missing node id"}), 400
         if not store_paths:
             return jsonify({"error": "storePaths are required"}), 400
-
         added = 0
         for sp in store_paths:
             store = KnowledgeStore(sp)
@@ -1134,12 +979,10 @@ def add_kg_node():
                     })
                     added += 1
             store.save(d)
-
         return jsonify({"success": True, "id": node_id, "added_to": added})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route('/api/kg/node/<path:node_id>', methods=['PUT'])
 def update_kg_node(node_id):
     """Update a concept description across selected YAML stores."""
@@ -1149,7 +992,6 @@ def update_kg_node(node_id):
         store_paths = data.get('storePaths', [])
         if not store_paths:
             return jsonify({"error": "storePaths are required"}), 400
-
         updated = 0
         for sp in store_paths:
             store = KnowledgeStore(sp)
@@ -1163,7 +1005,6 @@ def update_kg_node(node_id):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route('/api/kg/node/<path:node_id>', methods=['DELETE'])
 def delete_kg_node(node_id):
     """Delete a concept/fact and its links from selected YAML stores."""
@@ -1172,7 +1013,6 @@ def delete_kg_node(node_id):
         store_paths = data.get('storePaths', [])
         if not store_paths:
             return jsonify({"error": "storePaths are required"}), 400
-
         removed = 0
         for sp in store_paths:
             store = KnowledgeStore(sp)
@@ -1188,7 +1028,6 @@ def delete_kg_node(node_id):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route('/api/kg/edge', methods=['POST'])
 def add_kg_edge():
     """Add a new edge/link to selected YAML stores."""
@@ -1198,12 +1037,10 @@ def add_kg_edge():
         target = data.get('target')
         edge_type = data.get('type', 'related_to')
         store_paths = data.get('storePaths', [])
-
         if not source or not target:
             return jsonify({"error": "Missing source or target"}), 400
         if not store_paths:
             return jsonify({"error": "storePaths are required"}), 400
-
         added = 0
         for sp in store_paths:
             store = KnowledgeStore(sp)
@@ -1221,7 +1058,6 @@ def add_kg_edge():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route('/api/kg/edge/<path:source_id>/<path:target_id>', methods=['DELETE'])
 def delete_kg_edge(source_id, target_id):
     """Delete an edge from selected YAML stores."""
@@ -1230,7 +1066,6 @@ def delete_kg_edge(source_id, target_id):
         store_paths = data.get('storePaths', [])
         if not store_paths:
             return jsonify({"error": "storePaths are required"}), 400
-
         removed = 0
         for sp in store_paths:
             store = KnowledgeStore(sp)
@@ -1244,7 +1079,6 @@ def delete_kg_edge(source_id, target_id):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route('/api/kg/trigger', methods=['POST'])
 def trigger_kg_process():
     """Trigger a KG process (sleep or dream) on selected YAML stores."""
@@ -1256,7 +1090,6 @@ def trigger_kg_process():
         provider = data.get('provider') or None
         if not store_paths:
             return jsonify({"error": "storePaths are required"}), 400
-
         total_changes = {"concepts_added": 0, "links_added": 0}
         for sp in store_paths:
             store = KnowledgeStore(sp)
@@ -1270,7 +1103,6 @@ def trigger_kg_process():
                 return jsonify({"error": f"Unknown process type: {process_type}. Use 'sleep', 'dream', or 'evolve'."}), 400
             total_changes["concepts_added"] += result.get("concepts_added", 0)
             total_changes["links_added"] += result.get("links_added", 0)
-
         return jsonify({
             "success": True,
             "process_type": process_type,
@@ -1279,8 +1111,6 @@ def trigger_kg_process():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route('/api/kg/ingest', methods=['POST'])
 def ingest_to_kg():
     """Ingest text content into selected YAML stores."""
@@ -1291,12 +1121,10 @@ def ingest_to_kg():
         store_paths = data.get('storePaths', [])
         model = data.get('model') or None
         provider = data.get('provider') or None
-
         if not content_text or not content_text.strip():
             return jsonify({"error": "content is required"}), 400
         if not store_paths:
             return jsonify({"error": "storePaths are required"}), 400
-
         total_facts = 0
         total_concepts = 0
         for sp in store_paths:
@@ -1304,7 +1132,6 @@ def ingest_to_kg():
             result = store.create(model=model, provider=provider, context=context, content_text=content_text)
             total_facts += result.get('facts', 0)
             total_concepts += result.get('concepts', 0)
-
         return jsonify({
             "success": True,
             "facts": total_facts,
@@ -1313,14 +1140,11 @@ def ingest_to_kg():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route('/api/kg/pipeline/run', methods=['POST'])
 def run_kg_pipeline():
     """Run a KG pipeline step (create/assimilate/sleep/dream) on .knowledge.yaml stores.
     Streams NDJSON log lines."""
     from npcpy.memory.knowledge_store import KnowledgeStore
-
     data = request.get_json() or {}
     step = data.get('step')
     store_paths = data.get('storePaths', [])
@@ -1335,10 +1159,8 @@ def run_kg_pipeline():
             num_seeds = int(num_seeds)
         except (ValueError, TypeError):
             num_seeds = 3
-
     if not step or not store_paths:
         return jsonify({"error": "step and storePaths are required"}), 400
-
     def generate():
         job_id = data.get('jobId', f"kg_{int(time.time()*1000)}")
         for store_dir in store_paths:
@@ -1349,7 +1171,6 @@ def run_kg_pipeline():
                 "message": f"Starting {step} on {store_dir}",
                 "timestamp": int(time.time() * 1000),
             }) + "\n"
-
             try:
                 if step == 'create':
                     result = store.create(model=model, provider=provider, npc=None, context=context, content_text=content_text)
@@ -1367,7 +1188,6 @@ def run_kg_pipeline():
                         "timestamp": int(time.time() * 1000),
                     }) + "\n"
                     continue
-
                 yield json.dumps({
                     "jobId": job_id,
                     "kind": "finish",
@@ -1383,21 +1203,16 @@ def run_kg_pipeline():
                     "message": str(e),
                     "timestamp": int(time.time() * 1000),
                 }) + "\n"
-
         yield json.dumps({
             "jobId": job_id,
             "kind": "done",
             "message": "All stores processed",
             "timestamp": int(time.time() * 1000),
         }) + "\n"
-
     return Response(generate(), mimetype='application/x-ndjson')
-
-
 @app.route('/api/kg/query', methods=['POST'])
 def query_kg():
     """Query the knowledge graph with a natural language question. Returns an LLM response grounded in KG facts.
-
     Modes:
       - "keyword" (default): plain keyword-overlap scoring (original behavior)
       - "traversal": Poisson-sampled depth/breadth traversal via an ephemeral KGIndividual
@@ -1412,16 +1227,12 @@ def query_kg():
         lambda_breadth = float(data.get('lambda_breadth', 5.0))
         similarity_threshold = float(data.get('similarity_threshold', 0.6))
         population_id = data.get('population_id')
-
         if not question.strip():
             return jsonify({"error": "question is required"}), 400
-
         db_path = app.config.get('DB_PATH')
         engine = create_engine('sqlite:///' + db_path)
-
         model = app.config.get('DEFAULT_MODEL', None)
         provider = app.config.get('DEFAULT_PROVIDER', None)
-
         if mode == 'sememolution' and population_id:
             from npcpy.memory.kg_population import load_population, save_population
             mgr = load_population(engine, population_id)
@@ -1451,25 +1262,18 @@ def query_kg():
                     for c in rankings
                 ],
             })
-
-
-
         store_paths = data.get('storePaths', [])
         if not store_paths:
             return jsonify({"error": "storePaths are required"}), 400
-
         concepts_df, facts_df, _ = load_kg_data(store_paths)
-
         facts = []
         for _, row in facts_df.iterrows():
             facts.append({"statement": row.get('statement', '')})
         concepts = []
         for _, row in concepts_df.iterrows():
             concepts.append({"name": row.get('name', '')})
-
         if not facts:
             return jsonify({"error": "Knowledge graph is empty. Ingest some data first."}), 400
-
         if mode == 'traversal':
             from npcpy.memory.kg_population import KGGenome, KGIndividual, SememolutionPopulation
             genome = KGGenome(
@@ -1505,29 +1309,21 @@ def query_kg():
             relevant_concepts = [c.get('name', '') for c in concepts[:20]]
             if not relevant_facts:
                 relevant_facts = [f.get('statement', '') for f in facts[-top_k:]]
-
         kg_context = "Known facts:\n" + "\n".join(f"- {f}" for f in relevant_facts)
         if relevant_concepts:
             kg_context += "\n\nKey concepts: " + ", ".join(relevant_concepts)
-
         from npcpy.llm_funcs import get_llm_response
         prompt = f"""Based on the following knowledge graph data, answer the user's question.
 Use only the provided facts to ground your response. If the facts don't contain enough information, say so.
-
 {kg_context}
-
 User question: {question}
-
 Answer:"""
-
         response = get_llm_response(
             prompt,
             model=model,
             provider=provider,
         )
-
         answer = response.get('response', '') if isinstance(response, dict) else str(response)
-
         return jsonify({
             "answer": answer,
             "sources": relevant_facts[:5],
@@ -1536,18 +1332,14 @@ Answer:"""
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route('/api/kg/rollback', methods=['POST'])
 def rollback_kg():
     """Rollback selected YAML stores by clearing concepts and links (keeps memories)."""
     try:
         data = request.get_json() or {}
         store_paths = data.get('storePaths', [])
-
         if not store_paths:
             return jsonify({"error": "storePaths are required"}), 400
-
         cleared = 0
         for sp in store_paths:
             store = KnowledgeStore(sp)
@@ -1557,7 +1349,6 @@ def rollback_kg():
             d['last_evolved_at'] = None
             store.save(d)
             cleared += 1
-
         return jsonify({
             "success": True,
             "cleared": cleared
@@ -1565,9 +1356,6 @@ def rollback_kg():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
-
 @app.route('/api/kg/populations', methods=['GET'])
 def list_kg_populations():
     try:
@@ -1577,12 +1365,9 @@ def list_kg_populations():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route('/api/kg/population', methods=['POST'])
 def create_kg_population():
     """Create a fresh population of KGIndividuals with random genomes.
-
     Body:
       { "name": "my_pop", "population_size": 20, "model": "...", "provider": "...",
         "sample_size": 10, "seed_from_kg": true, "mutation_rate": 0.15, ... }
@@ -1598,11 +1383,9 @@ def create_kg_population():
             return jsonify({"error": "No model specified. Set model in request or DEFAULT_MODEL config."}), 400
         provider = data.get('provider') or app.config.get('DEFAULT_PROVIDER') or "ollama"
         seed_from_kg = bool(data.get('seed_from_kg', True))
-
         engine = create_engine('sqlite:///' + app.config.get('DB_PATH'))
         from npcpy.memory.kg_population import SememolutionPopulation, save_population, _ensure_population_schema
         _ensure_population_schema(engine)
-
         mgr = SememolutionPopulation(
             engine=engine, model=model, provider=provider,
             population_size=pop_size, sample_size=sample_size,
@@ -1613,21 +1396,16 @@ def create_kg_population():
                              ('elitism_count', 'elitism_count')):
             if k_src in data:
                 setattr(mgr.ga.config, k_dst, type(getattr(mgr.ga.config, k_dst))(data[k_src]))
-
         mgr.initialize()
-
         if seed_from_kg:
             import copy as _copy
             for ind in mgr.ga.population:
                 ind.kg_data = _copy.deepcopy(existing)
-
         save_population(engine, population_id, name, mgr)
         return jsonify({"success": True, "id": population_id, "name": name, "stats": mgr.get_stats()})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route('/api/kg/population/<population_id>', methods=['GET'])
 def get_kg_population(population_id):
     try:
@@ -1660,8 +1438,6 @@ def get_kg_population(population_id):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route('/api/kg/population/<population_id>', methods=['DELETE'])
 def delete_kg_population(population_id):
     try:
@@ -1671,8 +1447,6 @@ def delete_kg_population(population_id):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route('/api/kg/population/<population_id>/individual/<individual_id>', methods=['GET'])
 def get_kg_individual(population_id, individual_id):
     try:
@@ -1695,8 +1469,6 @@ def get_kg_individual(population_id, individual_id):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route('/api/kg/population/<population_id>/individual/<individual_id>/genome', methods=['PUT'])
 def update_kg_individual_genome(population_id, individual_id):
     try:
@@ -1710,8 +1482,6 @@ def update_kg_individual_genome(population_id, individual_id):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route('/api/kg/population/<population_id>/evolve', methods=['POST'])
 def evolve_kg_population(population_id):
     """Advance the population by one generation (select, crossover, mutate)."""
@@ -1727,9 +1497,6 @@ def evolve_kg_population(population_id):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
-
 @app.route("/api/knowledge/load", methods=["GET"])
 def knowledge_load():
     """Load the .knowledge.yaml for the current directory or a list of directories."""
@@ -1759,8 +1526,6 @@ def knowledge_load():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/knowledge/search", methods=["GET"])
 def knowledge_search():
     """Search memories in the local .knowledge.yaml."""
@@ -1775,8 +1540,6 @@ def knowledge_search():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/knowledge/memories", methods=["GET"])
 def knowledge_memories():
     """Get memories from local .knowledge.yaml with optional status filter."""
@@ -1792,8 +1555,6 @@ def knowledge_memories():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/knowledge/links", methods=["GET"])
 def knowledge_links():
     """Get links for a memory or all links from local .knowledge.yaml."""
@@ -1809,8 +1570,6 @@ def knowledge_links():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/knowledge/link", methods=["POST"])
 def knowledge_link_create():
     """Create a directed link in local .knowledge.yaml."""
@@ -1830,8 +1589,6 @@ def knowledge_link_create():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/knowledge/context", methods=["GET"])
 def knowledge_context():
     """Return formatted context string from local .knowledge.yaml."""
@@ -1845,8 +1602,6 @@ def knowledge_context():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/knowledge/all_memories", methods=["GET"])
 def knowledge_all_memories():
     """Return aggregated memories from all registered knowledge stores."""
@@ -1871,8 +1626,6 @@ def knowledge_all_memories():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/knowledge/all_search", methods=["GET"])
 def knowledge_all_search():
     """Search across all registered knowledge stores."""
@@ -1899,8 +1652,6 @@ def knowledge_all_search():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/knowledge/memory/update", methods=["POST"])
 def knowledge_memory_update():
     """Update a memory's status and/or final_memory in local .knowledge.yaml."""
@@ -1919,8 +1670,6 @@ def knowledge_memory_update():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/knowledge/memory/delete", methods=["POST"])
 def knowledge_memory_delete():
     """Delete a memory from local .knowledge.yaml."""
@@ -1941,8 +1690,6 @@ def knowledge_memory_delete():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/attachments/<message_id>", methods=["GET"])
 def get_message_attachments(message_id):
     try:
@@ -1965,7 +1712,6 @@ def get_message_attachments(message_id):
         return jsonify({"attachments": attachments, "error": None})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/attachment/<attachment_id>", methods=["GET"])
 def get_attachment(attachment_id):
     try:
@@ -1987,24 +1733,18 @@ def get_attachment(attachment_id):
         return jsonify({"error": "Attachment not found"}), 404
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/capture_screenshot", methods=["GET"])
 def capture():
-    
     screenshot = capture_screenshot(full=True)
-
-    
     if not screenshot:
         print("Screenshot capture failed")
         return None
-
     return jsonify({"screenshot": screenshot})
 @app.route("/api/jinxes/available", methods=["GET"])
 def get_available_jinxes():
     try:
         current_path = request.args.get('currentPath')
         jinx_names = set()
-
         dirs_to_scan = []
         if current_path:
             dirs_to_scan.append(os.path.join(current_path, 'agents', 'jinxes'))
@@ -2016,17 +1756,14 @@ def get_available_jinxes():
         package_dir = app.config.get('PACKAGE_NPC_TEAM_DIR')
         if package_dir:
             dirs_to_scan.append(os.path.join(package_dir, 'jinxes'))
-
         for d in dirs_to_scan:
             for jinx in load_jinxes_from_directory(d):
                 jinx_names.add(jinx.jinx_name)
-
         return jsonify({'jinxes': sorted(list(jinx_names)), 'error': None})
     except Exception as e:
         print(f"Error getting available jinxes: {str(e)}")
         traceback.print_exc()
         return jsonify({'jinxes': [], 'error': str(e)}), 500
-
 @app.route("/api/jinx/execute", methods=["POST"])
 def execute_jinx():
     """
@@ -2035,45 +1772,35 @@ def execute_jinx():
     """
     data = request.json
     stream_id = _setup_stream(data)
-
     print(f"--- Jinx Execution Request for streamId: {stream_id} ---", file=sys.stderr)
     print(f"Request Data: {json.dumps(data, indent=2)}", file=sys.stderr)
-
     jinx_name = data.get("jinxName")
     jinx_args = data.get("jinxArgs", [])
     print(f"Jinx Name: {jinx_name}, Jinx Args: {jinx_args}", file=sys.stderr)
     conversation_id = data.get("conversationId")
     model = data.get("model")
     provider = data.get("provider")
-
     if not conversation_id:
         print("ERROR: conversationId is required for Jinx execution with persistent variables", file=sys.stderr)
         return jsonify({"error": "conversationId is required for Jinx execution with persistent variables"}), 400
-
     npc_name = data.get("npc")
     npc_source = data.get("npcSource", "global")
     current_path = data.get("currentPath")
-    
     if not jinx_name:
         print("ERROR: jinxName is required", file=sys.stderr)
         return jsonify({"error": "jinxName is required"}), 400
-    
     if current_path:
         load_project_env(current_path)
-    
     jinx = None
-    
     if npc_name:
         npc_object = load_npc_by_name_and_source(npc_name, npc_source, current_path)
         if not npc_object and npc_source == 'project':
             npc_object = load_npc_by_name_and_source(npc_name, 'global')
     else:
         npc_object = None
-    
     if npc_object and hasattr(npc_object, 'jinxes_dict') and jinx_name in npc_object.jinxes_dict:
         jinx = npc_object.jinxes_dict[jinx_name]
         print(f"Found jinx in NPC's jinxes_dict", file=sys.stderr)
-    
     if not jinx and current_path:
         project_jinxes_base = os.path.join(current_path, 'npc_team', 'jinxes')
         for j in load_jinxes_from_directory(project_jinxes_base):
@@ -2081,7 +1808,6 @@ def execute_jinx():
                 jinx = j
                 print(f"Found jinx in project jinxes", file=sys.stderr)
                 break
-
     if not jinx:
         print(f"ERROR: Jinx '{jinx_name}' not found", file=sys.stderr)
         searched_paths = []
@@ -2091,14 +1817,10 @@ def execute_jinx():
             searched_paths.append(f"Project jinxes at {os.path.join(current_path, 'npc_team', 'jinxes')}")
         print(f"Searched in: {', '.join(searched_paths)}", file=sys.stderr)
         return jsonify({"error": f"Jinx '{jinx_name}' not found"}), 404
-    
     from npcpy.npc_compiler import extract_jinx_inputs
-
     fixed_args = []
     i = 0
-    
     cleaned_jinx_args = [arg for arg in jinx_args if arg is not None]
-
     while i < len(cleaned_jinx_args):
         arg = cleaned_jinx_args[i]
         if arg.startswith('-'):
@@ -2108,7 +1830,6 @@ def execute_jinx():
             while i < len(cleaned_jinx_args) and not cleaned_jinx_args[i].startswith('-'):
                 value_parts.append(cleaned_jinx_args[i])
                 i += 1
-            
             if value_parts:
                 full_value = " ".join(value_parts)
                 if full_value.startswith("'") and full_value.endswith("'"):
@@ -2119,22 +1840,15 @@ def execute_jinx():
         else:
             fixed_args.append(arg)
             i += 1
-
     input_values = extract_jinx_inputs(fixed_args, jinx)
-
     print(f'Executing jinx with input_values: {input_values}', file=sys.stderr)
-    
     if npc_object and hasattr(npc_object, 'jinxes_dict'):
         all_jinxes.update(npc_object.jinxes_dict)
-    
     if conversation_id not in app.jinx_conversation_contexts:
         app.jinx_conversation_contexts[conversation_id] = {}
     jinx_local_context = app.jinx_conversation_contexts[conversation_id]
-
     print(f"--- CONTEXT STATE (conversationId: {conversation_id}) ---", file=sys.stderr)
     print(f"jinx_local_context BEFORE Jinx execution: {jinx_local_context}", file=sys.stderr)
-
-    
     state = ServeState(
         npc=npc_object,
         team=None,
@@ -2143,12 +1857,10 @@ def execute_jinx():
         chat_provider=provider,
         current_path=current_path or os.getcwd(),
     )
-    
     extra_globals_for_jinx = {
         **jinx_local_context,
         'state': state,
     }
-
     jinx_execution_result = jinx.execute(
         input_values=input_values,
         jinja_env=npc_object.jinja_env if npc_object else None,
@@ -2156,18 +1868,13 @@ def execute_jinx():
         messages=messages,
         extra_globals=extra_globals_for_jinx
     )
-
     output_from_jinx_result = jinx_execution_result.get('output')
-    
     final_output_string = str(output_from_jinx_result) if output_from_jinx_result is not None else ""
-
     if isinstance(jinx_execution_result, dict):
         for key, value in jinx_execution_result.items():
             jinx_local_context[key] = value
-
     print(f"jinx_local_context AFTER Jinx execution (final state): {jinx_local_context}", file=sys.stderr)
     print(f"Jinx execution result output: {output_from_jinx_result}", file=sys.stderr)
-
     user_command_log = f"/{jinx_name} {' '.join(cleaned_jinx_args)}"
     if is_html:
         return Response(final_output_string, mimetype="text/html")
@@ -2186,7 +1893,6 @@ def get_models():
     seen = set()
     formatted_models = []
     _scan_cache: dict = {}
-
     def _add_model(m, p):
         if not m or (m, p) in seen:
             return
@@ -2196,7 +1902,6 @@ def get_models():
             "provider": p,
             "display_name": f"{m} | {p}",
         })
-
     def _resolve_providers(providers_list, scan_path):
         if not providers_list:
             return
@@ -2220,7 +1925,6 @@ def get_models():
                     if isinstance(model_list, list):
                         for model_name in model_list:
                             _add_model(model_name, provider_name)
-
     def _collect_team_models(team, scan_path):
         team_providers = getattr(team, 'providers', None)
         if isinstance(team_providers, list) and team_providers:
@@ -2234,7 +1938,6 @@ def get_models():
         for npc in team.npcs.values():
             if npc.model and npc.provider:
                 _add_model(npc.model, npc.provider)
-
     project_team_path = os.path.join(current_path, 'npc_team')
     if os.path.isdir(project_team_path):
         try:
@@ -2242,7 +1945,6 @@ def get_models():
             _collect_team_models(team, current_path)
         except Exception as e:
             print(f"[models] Failed to load project team: {e}")
-
     for team_path in registered_teams:
         if not os.path.isdir(team_path):
             continue
@@ -2251,10 +1953,8 @@ def get_models():
             _collect_team_models(team, team_path)
         except Exception as e:
             print(f"[models] Failed to load registered team {team_path}: {e}")
-
     print(f"[models] Returning {len(formatted_models)} team-configured models")
     return jsonify({"models": formatted_models, "error": None})
-
 @app.route("/api/available_models", methods=["GET"])
 def get_available_models():
     current_path = request.args.get("currentPath") or os.path.expanduser('~')
@@ -2276,36 +1976,24 @@ def get_available_models():
     except Exception as e:
         print(f"[available_models] Failed: {e}")
         return jsonify({"models": [], "error": str(e)})
-
 @app.route('/api/<command>', methods=['POST'])
 def api_command(command):
     data = request.json or {}
-    
-    
     handler = router.get_route(command)
     if not handler:
         return jsonify({"error": f"Unknown command: {command}"})
-    
-    
     if router.shell_only.get(command, False):
         return jsonify({"error": f"Command {command} is only available in shell mode"})
-    
-    
     try:
-        
         args = data.get('args', [])
         kwargs = data.get('kwargs', {})
-        
-        
         command_str = command
         if args:
             command_str += " " + " ".join(str(arg) for arg in args)
-            
         result = handler(command_str, **kwargs)
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)})
-
 @app.route("/api/jinxes/save", methods=["POST"])
 def save_jinx():
     try:
@@ -2314,10 +2002,8 @@ def save_jinx():
         is_global = data.get("isGlobal")
         current_path = data.get("currentPath")
         jinx_name = jinx_data.get("jinx_name")
-
         if not jinx_name:
             return jsonify({"error": "Jinx name is required"}), 400
-
         if is_global:
             user_npc_dir = app.config.get('user_npc_directory')
             if not user_npc_dir:
@@ -2327,21 +2013,16 @@ def save_jinx():
             if not current_path.endswith("npc_team"):
                 current_path = os.path.join(current_path, "npc_team")
             jinxes_dir = os.path.join(current_path, "jinxes")
-
         jinx = Jinx(jinx_data=jinx_data)
-
         jinx_rel_path = jinx_data.get("path", "")
         if jinx_rel_path and "/" in jinx_rel_path:
             save_dir = os.path.join(jinxes_dir, os.path.dirname(jinx_rel_path))
         else:
             save_dir = jinxes_dir
-
         jinx.save(save_dir)
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/jinxes/delete", methods=["POST"])
 def delete_jinx():
     """Delete a jinx file from the filesystem."""
@@ -2351,7 +2032,6 @@ def delete_jinx():
         scope = data.get("scope", "global")
         current_path = data.get("currentPath", "")
         source_path = data.get("sourcePath", "")
-
         if source_path and os.path.exists(source_path):
             file_path = source_path
         elif jinx_path:
@@ -2365,12 +2045,9 @@ def delete_jinx():
             file_path = os.path.join(jinxes_dir, f"{jinx_path}.jinx")
         else:
             return jsonify({"error": "jinxPath or sourcePath required"}), 400
-
         if not os.path.exists(file_path):
             return jsonify({"error": f"File not found: {file_path}"}), 404
-
         os.unlink(file_path)
-
         parent = os.path.dirname(file_path)
         while parent and parent != jinxes_dir if not source_path else False:
             try:
@@ -2381,12 +2058,9 @@ def delete_jinx():
                     break
             except OSError:
                 break
-
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/jinxes/ingest", methods=["POST"])
 def ingest_jinx_from_url():
     """
@@ -2398,24 +2072,19 @@ def ingest_jinx_from_url():
     """
     try:
         import requests as req_lib
-
         data = request.json
         url = data.get("url", "").strip()
         name = data.get("name", "").strip()
         scope = data.get("scope", "project")
         current_path = data.get("currentPath", "")
         skill_type = data.get("type", "auto")
-
         if not url:
             return jsonify({"error": "URL is required"}), 400
-
         if "github.com" in url and "/blob/" in url:
             url = url.replace("github.com", "raw.githubusercontent.com").replace("/blob/", "/")
-
         resp = req_lib.get(url, timeout=30)
         resp.raise_for_status()
         content = resp.text
-
         if scope == "global":
             jinxes_dir = os.path.join(app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team'), 'jinxes')
         else:
@@ -2423,9 +2092,7 @@ def ingest_jinx_from_url():
             if not base.endswith("npc_team"):
                 base = os.path.join(base, "npc_team")
             jinxes_dir = os.path.join(base, "jinxes")
-
         os.makedirs(jinxes_dir, exist_ok=True)
-
         url_lower = url.lower()
         if skill_type == "auto":
             if url_lower.endswith(".jinx") or url_lower.endswith(".yaml") or url_lower.endswith(".yml"):
@@ -2438,7 +2105,6 @@ def ingest_jinx_from_url():
                 skill_type = "skill"
             else:
                 skill_type = "skill"
-
         if not name:
             path_parts = url.rstrip("/").split("/")
             raw_name = path_parts[-1] if path_parts else "imported_skill"
@@ -2446,12 +2112,10 @@ def ingest_jinx_from_url():
                 if raw_name.lower().endswith(ext):
                     raw_name = raw_name[: -len(ext)]
             name = raw_name.replace(" ", "_").replace("-", "_").lower()
-
         if skill_type == "jinx":
             file_path = os.path.join(jinxes_dir, f"{name}.jinx")
             with open(file_path, "w") as f:
                 f.write(content)
-
             return jsonify({
                 "status": "success",
                 "type": "jinx",
@@ -2459,12 +2123,10 @@ def ingest_jinx_from_url():
                 "path": file_path,
                 "message": f"Jinx '{name}' saved to {file_path}"
             })
-
         else:
             skill_dir = os.path.join(jinxes_dir, "skills", name)
             os.makedirs(skill_dir, exist_ok=True)
             skill_path = os.path.join(skill_dir, "SKILL.md")
-
             if content.strip().startswith("---"):
                 with open(skill_path, "w") as f:
                     f.write(content)
@@ -2472,7 +2134,6 @@ def ingest_jinx_from_url():
                 frontmatter = f"---\nname: {name}\ndescription: Skill ingested from {url}\n---\n"
                 with open(skill_path, "w") as f:
                     f.write(frontmatter + "\n" + content)
-
             return jsonify({
                 "status": "success",
                 "type": "skill",
@@ -2480,29 +2141,22 @@ def ingest_jinx_from_url():
                 "path": skill_path,
                 "message": f"Skill '{name}' saved to {skill_path}"
             })
-
     except req_lib.exceptions.RequestException as e:
         return jsonify({"error": f"Failed to fetch URL: {str(e)}"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/jinx/test", methods=["POST"])
 def test_jinx():
     data = request.json
     jinx_data = data.get("jinx")
     test_inputs = data.get("inputs", {})
     current_path = data.get("currentPath")
-    
     if current_path:
         load_project_env(current_path)
-    
     jinx = Jinx(jinx_data=jinx_data)
-    
     from jinja2.sandbox import SandboxedEnvironment
     temp_env = SandboxedEnvironment()
     jinx.render_first_pass(temp_env, {})
-    
     conversation_id = f"jinx_test_{uuid.uuid4().hex[:8]}"
     try:
         result = jinx.execute(
@@ -2520,8 +2174,6 @@ def test_jinx():
         jinx_execution_status = "failed"
         jinx_error_message = str(e)
         output = f"Jinx execution failed: {e}"
-
-
     return jsonify({
         "output": output,
         "conversation_id": conversation_id,
@@ -2530,11 +2182,8 @@ def test_jinx():
     })
 from npcpy.ft.diff import train_diffusion, DiffusionConfig
 import threading
-
 from collections import defaultdict
-
 finetune_jobs = {}
-
 def extract_and_store_memories(
     conversation_text,
     conversation_id,
@@ -2547,7 +2196,6 @@ def extract_and_store_memories(
 ):
     from npcpy.llm_funcs import get_facts
     from npcpy.memory.knowledge_store import get_store_for_path
-
     memory_context = ""
     if current_path:
         try:
@@ -2555,7 +2203,6 @@ def extract_and_store_memories(
             memory_context = store.build_context(max_memories=10)
         except Exception:
             pass
-
     from npcpy.llm_funcs import resolve_model_provider
     resolved_model, resolved_provider, _, _ = resolve_model_provider(
         npc=npc_object,
@@ -2563,7 +2210,6 @@ def extract_and_store_memories(
         model=model,
         provider=provider,
     )
-
     from npcpy.llm_funcs import CONVERSATION_RULES
     facts = get_facts(
         conversation_text,
@@ -2573,10 +2219,8 @@ def extract_and_store_memories(
         context=memory_context,
         rules=CONVERSATION_RULES,
     )
-    
     memories_for_approval = []
     from npcpy.memory.knowledge_store import get_store_for_path
-
     if facts and current_path:
         store = get_store_for_path(current_path)
         for i, fact in enumerate(facts):
@@ -2601,13 +2245,10 @@ def extract_and_store_memories(
                 "context": fact.get('source_text', ''),
                 "npc": npc_name or "default"
             })
-            
-    
     return memories_for_approval
 @app.route('/api/finetuned_models', methods=['GET'])
 def get_finetuned_models():
     current_path = request.args.get("currentPath")
-    
     potential_root_paths = [
         get_models_dir(),
         get_images_dir(),
@@ -2616,27 +2257,20 @@ def get_finetuned_models():
         project_models_path = os.path.join(current_path, 'models')
         project_images_path = os.path.join(current_path, 'images')
         potential_root_paths.extend([project_models_path, project_images_path])
-
     finetuned_models = []
-
     print(f"🌋 Searching for fine-tuned models in potential root paths: {set(potential_root_paths)}")
-
     for root_path in set(potential_root_paths):
         if not os.path.exists(root_path) or not os.path.isdir(root_path):
             print(f"🌋 Skipping non-existent or non-directory root path: {root_path}")
             continue
-
         print(f"🌋 Scanning root path: {root_path}")
         for model_dir_name in os.listdir(root_path):
             full_model_path = os.path.join(root_path, model_dir_name)
-            
             if not os.path.isdir(full_model_path):
                 print(f"🌋 Skipping {full_model_path}: Not a directory.")
                 continue
-
             has_model_final_pt = os.path.exists(os.path.join(full_model_path, 'model_final.pt'))
             has_checkpoints_dir = os.path.isdir(os.path.join(full_model_path, 'checkpoints'))
-
             if has_model_final_pt or has_checkpoints_dir:
                 print(f"🌋 Identified fine-tuned model: {model_dir_name} at {full_model_path} (found model_final.pt or checkpoints dir)")
                 finetuned_models.append({
@@ -2645,12 +2279,9 @@ def get_finetuned_models():
                     "display_name": f"{model_dir_name} | Fine-tuned Diffuser"
                 })
                 continue
-
             print(f"🌋 Skipping {full_model_path}: No model_final.pt or checkpoints directory found at root.")
-    
     print(f"🌋 Finished scanning. Found {len(finetuned_models)} fine-tuned models.")
     return jsonify({"models": finetuned_models, "error": None})
-
 @app.route('/api/finetune_diffusers', methods=['POST'])
 def finetune_diffusers():
     data = request.json
@@ -2661,25 +2292,20 @@ def finetune_diffusers():
     batch_size = data.get('batchSize', 4)
     learning_rate = data.get('learningRate', 1e-4)
     output_path = data.get('outputPath', get_models_dir())
-
     print(f"🌋 Finetune Diffusers Request Received!")
     print(f"  Images: {len(images)} files")
     print(f"  Output Name: {output_name}")
     print(f"  Epochs: {num_epochs}, Batch Size: {batch_size}, Learning Rate: {learning_rate}")
-    
     if not images:
         print("🌋 Error: No images provided for finetuning.")
         return jsonify({'error': 'No images provided'}), 400
-    
     if not captions or len(captions) != len(images):
         print("🌋 Warning: Captions not provided or mismatching image count. Using empty captions.")
         captions = [''] * len(images)
-    
     expanded_images = [os.path.expanduser(p) for p in images]
     output_dir = os.path.expanduser(
         os.path.join(output_path, output_name)
     )
-    
     job_id = f"ft_{int(time.time())}"
     finetune_jobs[job_id] = {
         'status': 'running',
@@ -2694,7 +2320,6 @@ def finetune_diffusers():
         'start_time': datetime.datetime.now().isoformat()
     }
     print(f"🌋 Finetuning job {job_id} initialized. Output directory: {output_dir}")
-
     def progress_callback(progress_data):
         """Callback to update job progress from training loop."""
         finetune_jobs[job_id]['current_epoch'] = progress_data.get('epoch', 0)
@@ -2705,7 +2330,6 @@ def finetune_diffusers():
         finetune_jobs[job_id]['current_loss'] = progress_data.get('loss')
         if progress_data.get('loss_history'):
             finetune_jobs[job_id]['loss_history'] = progress_data['loss_history']
-
     def run_training_async():
         print(f"🌋 Finetuning job {job_id}: Starting asynchronous training thread...")
         try:
@@ -2715,7 +2339,6 @@ def finetune_diffusers():
                 learning_rate=learning_rate,
                 output_model_path=output_dir
             )
-
             print(f"🌋 Finetuning job {job_id}: Calling train_diffusion with config: {config}")
             model_path = train_diffusion(
                 expanded_images,
@@ -2723,7 +2346,6 @@ def finetune_diffusers():
                 config=config,
                 progress_callback=progress_callback
             )
-
             finetune_jobs[job_id]['status'] = 'complete'
             finetune_jobs[job_id]['model_path'] = model_path
             finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
@@ -2735,25 +2357,20 @@ def finetune_diffusers():
             print(f"🌋 Finetuning job {job_id}: ERROR during training: {e}")
             traceback.print_exc()
         print(f"🌋 Finetuning job {job_id}: Asynchronous training thread finished.")
-
     thread = threading.Thread(target=run_training_async)
     thread.daemon = True
     thread.start()
-    
     print(f"🌋 Finetuning job {job_id} successfully launched in background. Returning initial status.")
     return jsonify({
         'status': 'started',
         'jobId': job_id,
         'message': f"Finetuning job '{job_id}' started. Check /api/finetune_status/{job_id} for updates."
     })
-
 @app.route('/api/finetune_status/<job_id>', methods=['GET'])
 def finetune_status(job_id):
     if job_id not in finetune_jobs:
         return jsonify({'error': 'Job not found'}), 404
-
     job = finetune_jobs[job_id]
-
     if job['status'] == 'complete':
         return jsonify({
             'status': 'complete',
@@ -2766,7 +2383,6 @@ def finetune_status(job_id):
             'status': 'error',
             'error': job.get('error_msg', 'Unknown error')
         })
-
     return jsonify({
         'status': 'running',
         'epoch': job.get('current_epoch', 0),
@@ -2778,14 +2394,11 @@ def finetune_status(job_id):
         'loss_history': job.get('loss_history', []),
         'start_time': job.get('start_time')
     })
-
 instruction_finetune_jobs = {}
-
 @app.route('/api/finetune_instruction', methods=['POST'])
 def finetune_instruction():
     """
     Fine-tune an LLM on instruction/conversation data.
-
     Request body:
     {
         "trainingData": [
@@ -2807,7 +2420,6 @@ def finetune_instruction():
         "npc": "optional npc name",
         "formatStyle": "gemma"  // "gemma", "llama", or "default"
     }
-
     Strategies:
     - sft: Supervised Fine-Tuning with input/output pairs
     - usft: Unsupervised Fine-Tuning on raw text (domain adaptation)
@@ -2817,7 +2429,6 @@ def finetune_instruction():
     from npcpy.ft.sft import run_sft, SFTConfig
     from npcpy.ft.usft import run_usft, USFTConfig
     from npcpy.ft.rl import train_with_dpo, RLConfig
-
     data = request.json
     training_data = data.get('trainingData', [])
     output_name = data.get('outputName', 'my_instruction_model')
@@ -2832,25 +2443,20 @@ def finetune_instruction():
     system_prompt = data.get('systemPrompt', '')
     format_style = data.get('formatStyle', 'gemma')
     npc_name = data.get('npc', None)
-
     print(f"🎓 Instruction Fine-tune Request Received!")
     print(f"  Training examples: {len(training_data)}")
     print(f"  Strategy: {strategy}")
     print(f"  Base model: {base_model}")
     print(f"  Output name: {output_name}")
     print(f"  Epochs: {num_epochs}, LR: {learning_rate}, Batch: {batch_size}")
-
     if not training_data:
         print("🎓 Error: No training data provided.")
         return jsonify({'error': 'No training data provided'}), 400
-
     min_examples = 10 if strategy == 'memory_classifier' else 3
     if len(training_data) < min_examples:
         print(f"🎓 Error: Need at least {min_examples} training examples for {strategy}.")
         return jsonify({'error': f'Need at least {min_examples} training examples for {strategy}'}), 400
-
     expanded_output_dir = os.path.expanduser(os.path.join(output_path, output_name))
-
     job_id = f"ift_{int(time.time())}"
     instruction_finetune_jobs[job_id] = {
         'status': 'running',
@@ -2868,7 +2474,6 @@ def finetune_instruction():
         'num_examples': len(training_data)
     }
     print(f"🎓 Instruction fine-tuning job {job_id} initialized. Output: {expanded_output_dir}")
-
     def run_training_async():
         print(f"🎓 Job {job_id}: Starting {strategy.upper()} training thread...")
         try:
@@ -2882,7 +2487,6 @@ def finetune_instruction():
                         inp = f"{system_prompt}\n\n{inp}"
                     X.append(inp)
                     y.append(out)
-
                 config = SFTConfig(
                     base_model_name=base_model,
                     output_model_path=expanded_output_dir,
@@ -2892,7 +2496,6 @@ def finetune_instruction():
                     lora_r=lora_r,
                     lora_alpha=lora_alpha
                 )
-
                 print(f"🎓 Job {job_id}: Running SFT with config: {config}")
                 model_path = run_sft(
                     X=X,
@@ -2900,12 +2503,10 @@ def finetune_instruction():
                     config=config,
                     format_style=format_style
                 )
-
                 instruction_finetune_jobs[job_id]['status'] = 'complete'
                 instruction_finetune_jobs[job_id]['model_path'] = model_path
                 instruction_finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
                 print(f"🎓 Job {job_id}: SFT complete! Model saved to: {model_path}")
-
             elif strategy == 'usft':
                 texts = []
                 for example in training_data:
@@ -2920,7 +2521,6 @@ def finetune_instruction():
                             texts.append(inp)
                         elif out:
                             texts.append(out)
-
                 config = USFTConfig(
                     base_model_name=base_model,
                     output_model_path=expanded_output_dir,
@@ -2930,15 +2530,12 @@ def finetune_instruction():
                     lora_r=lora_r,
                     lora_alpha=lora_alpha
                 )
-
                 print(f"🎓 Job {job_id}: Running USFT with {len(texts)} texts")
                 model_path = run_usft(texts=texts, config=config)
-
                 instruction_finetune_jobs[job_id]['status'] = 'complete'
                 instruction_finetune_jobs[job_id]['model_path'] = model_path
                 instruction_finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
                 print(f"🎓 Job {job_id}: USFT complete! Model saved to: {model_path}")
-
             elif strategy == 'dpo':
                 traces = []
                 for example in training_data:
@@ -2947,7 +2544,6 @@ def finetune_instruction():
                         'final_output': example.get('output', example.get('response', '')),
                         'reward': example.get('reward', example.get('quality', 0.5))
                     })
-
                 config = RLConfig(
                     base_model_name=base_model,
                     adapter_path=expanded_output_dir,
@@ -2957,26 +2553,20 @@ def finetune_instruction():
                     lora_r=lora_r,
                     lora_alpha=lora_alpha
                 )
-
                 print(f"🎓 Job {job_id}: Running DPO with {len(traces)} traces")
                 adapter_path = train_with_dpo(traces, config)
-
                 if adapter_path:
                     instruction_finetune_jobs[job_id]['status'] = 'complete'
                     instruction_finetune_jobs[job_id]['model_path'] = adapter_path
                 else:
                     instruction_finetune_jobs[job_id]['status'] = 'error'
                     instruction_finetune_jobs[job_id]['error_msg'] = 'Not enough valid preference pairs for DPO training'
-
                 instruction_finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
                 print(f"🎓 Job {job_id}: DPO complete! Adapter saved to: {adapter_path}")
-
             elif strategy == 'memory_classifier':
                 from npcpy.ft.memory_trainer import MemoryTrainer
-
                 approved_memories = []
                 rejected_memories = []
-
                 for example in training_data:
                     status = example.get('status', 'approved')
                     memory_data = {
@@ -2988,13 +2578,11 @@ def finetune_instruction():
                         approved_memories.append(memory_data)
                     else:
                         rejected_memories.append(memory_data)
-
                 if len(approved_memories) < 10 or len(rejected_memories) < 10:
                     instruction_finetune_jobs[job_id]['status'] = 'error'
                     instruction_finetune_jobs[job_id]['error_msg'] = 'Need at least 10 approved and 10 rejected memories'
                     instruction_finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
                     return
-
                 trainer = MemoryTrainer(model_name=base_model)
                 success = trainer.train(
                     approved_memories=approved_memories,
@@ -3002,33 +2590,26 @@ def finetune_instruction():
                     output_dir=expanded_output_dir,
                     epochs=num_epochs
                 )
-
                 if success:
                     instruction_finetune_jobs[job_id]['status'] = 'complete'
                     instruction_finetune_jobs[job_id]['model_path'] = expanded_output_dir
                 else:
                     instruction_finetune_jobs[job_id]['status'] = 'error'
                     instruction_finetune_jobs[job_id]['error_msg'] = 'Memory classifier training failed'
-
                 instruction_finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
                 print(f"🎓 Job {job_id}: Memory classifier complete!")
-
             else:
                 raise ValueError(f"Unknown strategy: {strategy}. Supported: sft, usft, dpo, memory_classifier")
-
         except Exception as e:
             instruction_finetune_jobs[job_id]['status'] = 'error'
             instruction_finetune_jobs[job_id]['error_msg'] = str(e)
             instruction_finetune_jobs[job_id]['end_time'] = datetime.datetime.now().isoformat()
             print(f"🎓 Job {job_id}: ERROR during training: {e}")
             traceback.print_exc()
-
         print(f"🎓 Job {job_id}: Training thread finished.")
-
     thread = threading.Thread(target=run_training_async)
     thread.daemon = True
     thread.start()
-
     print(f"🎓 Job {job_id} launched in background.")
     return jsonify({
         'status': 'started',
@@ -3036,15 +2617,12 @@ def finetune_instruction():
         'strategy': strategy,
         'message': f"Instruction fine-tuning job '{job_id}' started. Check /api/finetune_instruction_status/{job_id} for updates."
     })
-
 @app.route('/api/finetune_instruction_status/<job_id>', methods=['GET'])
 def finetune_instruction_status(job_id):
     """Get the status of an instruction fine-tuning job."""
     if job_id not in instruction_finetune_jobs:
         return jsonify({'error': 'Job not found'}), 404
-
     job = instruction_finetune_jobs[job_id]
-
     if job['status'] == 'complete':
         return jsonify({
             'status': 'complete',
@@ -3062,7 +2640,6 @@ def finetune_instruction_status(job_id):
             'start_time': job.get('start_time'),
             'end_time': job.get('end_time')
         })
-
     return jsonify({
         'status': 'running',
         'strategy': job.get('strategy'),
@@ -3075,37 +2652,28 @@ def finetune_instruction_status(job_id):
         'start_time': job.get('start_time'),
         'num_examples': job.get('num_examples', 0)
     })
-
 @app.route('/api/instruction_models', methods=['GET'])
 def get_instruction_models():
     """Get list of available instruction-tuned models."""
     current_path = request.args.get("currentPath")
-
     potential_root_paths = [
         get_models_dir(),
     ]
     if current_path:
         project_models_path = os.path.join(current_path, 'models')
         potential_root_paths.append(project_models_path)
-
     instruction_models = []
-
     print(f"🎓 Searching for instruction models in: {set(potential_root_paths)}")
-
     for root_path in set(potential_root_paths):
         if not os.path.exists(root_path) or not os.path.isdir(root_path):
             continue
-
         for model_dir_name in os.listdir(root_path):
             full_model_path = os.path.join(root_path, model_dir_name)
-
             if not os.path.isdir(full_model_path):
                 continue
-
             has_adapter_config = os.path.exists(os.path.join(full_model_path, 'adapter_config.json'))
             has_config = os.path.exists(os.path.join(full_model_path, 'config.json'))
             has_tokenizer = os.path.exists(os.path.join(full_model_path, 'tokenizer_config.json'))
-
             if has_adapter_config or (has_config and has_tokenizer):
                 model_type = 'lora_adapter' if has_adapter_config else 'full_model'
                 print(f"🎓 Found instruction model: {model_dir_name} ({model_type})")
@@ -3115,18 +2683,14 @@ def get_instruction_models():
                     "type": model_type,
                     "display_name": f"{model_dir_name} | Instruction Model"
                 })
-
     print(f"🎓 Found {len(instruction_models)} instruction models.")
     return jsonify({"models": instruction_models, "error": None})
-
 ge_jobs = {}
 ge_populations = {}
-
 @app.route('/api/genetic/create_population', methods=['POST'])
 def create_genetic_population():
     """
     Create a new genetic evolution population.
-
     Request body:
     {
         "populationId": "optional_id",
@@ -3143,7 +2707,6 @@ def create_genetic_population():
     }
     """
     from npcpy.ft.ge import GeneticEvolver, GAConfig
-
     data = request.json
     population_id = data.get('populationId', f"pop_{int(time.time())}")
     population_type = data.get('populationType', 'prompt')
@@ -3151,7 +2714,6 @@ def create_genetic_population():
     config_data = data.get('config', {})
     initial_population = data.get('initialPopulation', [])
     npc_name = data.get('npc', None)
-
     config = GAConfig(
         population_size=population_size,
         mutation_rate=config_data.get('mutationRate', 0.15),
@@ -3160,17 +2722,13 @@ def create_genetic_population():
         elitism_count=config_data.get('elitismCount', 2),
         generations=config_data.get('generations', 50)
     )
-
     print(f"🧬 Creating genetic population {population_id} (type: {population_type})")
-
     if population_type == 'prompt':
         import random
-
         def initialize_fn():
             if initial_population:
                 return random.choice(initial_population)
             return f"You are a helpful assistant. {random.choice(['Be concise.', 'Be detailed.', 'Be creative.', 'Be precise.'])}"
-
         def mutate_fn(individual):
             mutations = [
                 lambda s: s + " Think step by step.",
@@ -3180,19 +2738,15 @@ def create_genetic_population():
                 lambda s: s + " Provide examples.",
             ]
             return random.choice(mutations)(individual)
-
         def crossover_fn(p1, p2):
             words1 = p1.split()
             words2 = p2.split()
             mid = len(words1) // 2
             return ' '.join(words1[:mid] + words2[mid:])
-
         def fitness_fn(individual):
             return len(individual) / 100.0
-
     elif population_type == 'npc_config':
         import random
-
         def initialize_fn():
             if initial_population:
                 return random.choice(initial_population)
@@ -3201,7 +2755,6 @@ def create_genetic_population():
                 'top_p': random.uniform(0.7, 1.0),
                 'system_prompt_modifier': random.choice(['detailed', 'concise', 'creative']),
             }
-
         def mutate_fn(individual):
             mutated = individual.copy()
             key = random.choice(list(mutated.keys()))
@@ -3210,41 +2763,33 @@ def create_genetic_population():
             elif key == 'top_p':
                 mutated[key] = max(0.5, min(1.0, mutated[key] + random.gauss(0, 0.05)))
             return mutated
-
         def crossover_fn(p1, p2):
             child = {}
             for key in p1:
                 child[key] = random.choice([p1.get(key), p2.get(key)])
             return child
-
         def fitness_fn(individual):
             return 0.5
-
     else:
         import random
-
         def initialize_fn():
             if initial_population:
                 return random.choice(initial_population)
             return {"value": random.random()}
-
         def mutate_fn(individual):
             if isinstance(individual, dict):
                 mutated = individual.copy()
                 mutated['value'] = individual.get('value', 0) + random.gauss(0, 0.1)
                 return mutated
             return individual
-
         def crossover_fn(p1, p2):
             if isinstance(p1, dict) and isinstance(p2, dict):
                 return {'value': (p1.get('value', 0) + p2.get('value', 0)) / 2}
             return p1
-
         def fitness_fn(individual):
             if isinstance(individual, dict):
                 return 1.0 - abs(individual.get('value', 0) - 0.5)
             return 0.5
-
     evolver = GeneticEvolver(
         fitness_fn=fitness_fn,
         mutate_fn=mutate_fn,
@@ -3252,9 +2797,7 @@ def create_genetic_population():
         initialize_fn=initialize_fn,
         config=config
     )
-
     evolver.initialize_population()
-
     ge_populations[population_id] = {
         'evolver': evolver,
         'type': population_type,
@@ -3264,7 +2807,6 @@ def create_genetic_population():
         'npc': npc_name,
         'created_at': datetime.datetime.now().isoformat()
     }
-
     return jsonify({
         'populationId': population_id,
         'populationType': population_type,
@@ -3272,12 +2814,10 @@ def create_genetic_population():
         'generation': 0,
         'message': f"Population '{population_id}' created with {population_size} individuals"
     })
-
 @app.route('/api/genetic/evolve', methods=['POST'])
 def evolve_population():
     """
     Run evolution for N generations.
-
     Request body:
     {
         "populationId": "pop_123",
@@ -3289,20 +2829,15 @@ def evolve_population():
     population_id = data.get('populationId')
     generations = data.get('generations', 1)
     fitness_scores = data.get('fitnessScores', None)
-
     if population_id not in ge_populations:
         return jsonify({'error': f"Population '{population_id}' not found"}), 404
-
     pop_data = ge_populations[population_id]
     evolver = pop_data['evolver']
-
     print(f"🧬 Evolving population {population_id} for {generations} generations")
-
     if fitness_scores and len(fitness_scores) == len(evolver.population):
         original_fitness = evolver.fitness_fn
         score_iter = iter(fitness_scores)
         evolver.fitness_fn = lambda x: next(score_iter, 0.5)
-
     results = []
     for gen in range(generations):
         gen_stats = evolver.evolve_generation()
@@ -3314,10 +2849,8 @@ def evolve_population():
             'avgFitness': gen_stats['avg_fitness'],
             'bestIndividual': gen_stats['best_individual']
         })
-
     if fitness_scores:
         evolver.fitness_fn = original_fitness
-
     return jsonify({
         'populationId': population_id,
         'generationsRun': generations,
@@ -3326,16 +2859,13 @@ def evolve_population():
         'bestIndividual': results[-1]['bestIndividual'] if results else None,
         'population': evolver.population[:5]
     })
-
 @app.route('/api/genetic/population/<population_id>', methods=['GET'])
 def get_population(population_id):
     """Get current state of a population."""
     if population_id not in ge_populations:
         return jsonify({'error': f"Population '{population_id}' not found"}), 404
-
     pop_data = ge_populations[population_id]
     evolver = pop_data['evolver']
-
     return jsonify({
         'populationId': population_id,
         'type': pop_data['type'],
@@ -3346,7 +2876,6 @@ def get_population(population_id):
         'createdAt': pop_data['created_at'],
         'npc': pop_data.get('npc')
     })
-
 @app.route('/api/genetic/populations', methods=['GET'])
 def list_populations():
     """List all active populations."""
@@ -3360,25 +2889,19 @@ def list_populations():
             'createdAt': pop_data['created_at'],
             'npc': pop_data.get('npc')
         })
-
     return jsonify({'populations': populations})
-
 @app.route('/api/genetic/population/<population_id>', methods=['DELETE'])
 def delete_population(population_id):
     """Delete a population."""
     if population_id not in ge_populations:
         return jsonify({'error': f"Population '{population_id}' not found"}), 404
-
     del ge_populations[population_id]
     print(f"🧬 Deleted population {population_id}")
-
     return jsonify({'message': f"Population '{population_id}' deleted"})
-
 @app.route('/api/genetic/inject', methods=['POST'])
 def inject_individuals():
     """
     Inject new individuals into a population.
-
     Request body:
     {
         "populationId": "pop_123",
@@ -3390,13 +2913,10 @@ def inject_individuals():
     population_id = data.get('populationId')
     individuals = data.get('individuals', [])
     replace_worst = data.get('replaceWorst', True)
-
     if population_id not in ge_populations:
         return jsonify({'error': f"Population '{population_id}' not found"}), 404
-
     pop_data = ge_populations[population_id]
     evolver = pop_data['evolver']
-
     if replace_worst:
         fitness_scores = evolver.evaluate_population()
         sorted_pop = sorted(zip(evolver.population, fitness_scores), key=lambda x: x[1], reverse=True)
@@ -3404,15 +2924,12 @@ def inject_individuals():
         evolver.population = [ind for ind, _ in sorted_pop[:keep_count]] + individuals
     else:
         evolver.population.extend(individuals)
-
     print(f"🧬 Injected {len(individuals)} individuals into {population_id}")
-
     return jsonify({
         'populationId': population_id,
         'injectedCount': len(individuals),
         'newPopulationSize': len(evolver.population)
     })
-
 @app.route("/api/ml/train", methods=["POST"])
 def train_ml_model():
     import joblib
@@ -3423,7 +2940,6 @@ def train_ml_model():
     from sklearn.cluster import KMeans
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import mean_squared_error, r2_score, accuracy_score
-
     data = request.json
     model_name = data.get("name")
     model_type = data.get("type")
@@ -3431,13 +2947,10 @@ def train_ml_model():
     features = data.get("features")
     training_data = data.get("data")
     hyperparams = data.get("hyperparameters", {})
-
     df = pd.DataFrame(training_data)
     X = df[features].values
-
     metrics = {}
     model = None
-
     if model_type == "linear_regression":
         y = df[target].values
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
@@ -3448,7 +2961,6 @@ def train_ml_model():
             "r2_score": r2_score(y_test, y_pred),
             "rmse": np.sqrt(mean_squared_error(y_test, y_pred))
         }
-
     elif model_type == "logistic_regression":
         y = df[target].values
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
@@ -3456,7 +2968,6 @@ def train_ml_model():
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
         metrics = {"accuracy": accuracy_score(y_test, y_pred)}
-
     elif model_type == "random_forest":
         y = df[target].values
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
@@ -3467,13 +2978,11 @@ def train_ml_model():
             "r2_score": r2_score(y_test, y_pred),
             "rmse": np.sqrt(mean_squared_error(y_test, y_pred))
         }
-
     elif model_type == "clustering":
         n_clusters = hyperparams.get("n_clusters", 3)
         model = KMeans(n_clusters=n_clusters)
         labels = model.fit_predict(X)
         metrics = {"inertia": model.inertia_, "n_clusters": n_clusters}
-
     elif model_type == "gradient_boost":
         y = df[target].values
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
@@ -3484,45 +2993,34 @@ def train_ml_model():
             "r2_score": r2_score(y_test, y_pred),
             "rmse": np.sqrt(mean_squared_error(y_test, y_pred))
         }
-
     model_id = f"{model_name}_{int(time.time())}"
     model_path = os.path.join(get_models_dir(), f"{model_id}.joblib")
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
-
     joblib.dump({
         "model": model,
         "features": features,
         "target": target,
         "type": model_type
     }, model_path)
-
     return jsonify({
         "model_id": model_id,
         "metrics": metrics,
         "error": None
     })
-
 @app.route("/api/ml/predict", methods=["POST"])
 def ml_predict():
     import joblib
-
     data = request.json
     model_name = data.get("model_name")
     input_data = data.get("input_data")
-
     model_dir = get_models_dir()
     model_files = [f for f in os.listdir(model_dir) if f.startswith(model_name)]
-
     if not model_files:
         return jsonify({"error": f"Model {model_name} not found"})
-
     model_path = os.path.join(model_dir, model_files[0])
-
     model_data = joblib.load(model_path)
-
     model = model_data["model"]
     prediction = model.predict([input_data])
-
     return jsonify({
         "prediction": prediction.tolist(),
         "error": None
@@ -3542,7 +3040,6 @@ def label_jinx_execution():
         return jsonify({"success": True, "error": None})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/npc/executions", methods=["GET"])
 def get_npc_executions():
     npc_name = request.args.get("npcName")
@@ -3572,21 +3069,17 @@ def get_npc_executions():
         return jsonify({"executions": executions, "error": None})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/save_npc", methods=["POST"])
 def save_npc():
     try:
         data = request.json
         npc_data = data.get("npc")
         source_path = data.get("sourcePath")
-
         if not npc_data or "name" not in npc_data:
             return jsonify({"error": "Invalid NPC data"}), 400
-
         npc_directory = os.path.dirname(source_path) if source_path else None
         if not npc_directory:
             return jsonify({"error": "sourcePath required"}), 400
-
         existing_npc_path = os.path.join(npc_directory, f"{npc_data['name']}.npc")
         existing_model = npc_data.get("model", "")
         existing_provider = npc_data.get("provider", "")
@@ -3599,7 +3092,6 @@ def save_npc():
                     existing_provider = existing_data["provider"]
             except Exception:
                 pass
-
         known_keys = {"name", "primary_directive", "model", "provider", "api_url", "jinxes"}
         extra = {k: v for k, v in npc_data.items() if k not in known_keys}
         npc = NPC(
@@ -3612,13 +3104,10 @@ def save_npc():
             **extra,
         )
         npc.save(npc_directory)
-
         return jsonify({"message": "NPC saved successfully", "error": None})
-
     except Exception as e:
         print(f"Error saving NPC: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/jinxes/project", methods=["GET"])
 def get_jinxes_project():
     project_dir = request.args.get("currentPath")
@@ -3629,13 +3118,11 @@ def get_jinxes_project():
     if not os.path.exists(project_dir):
         return jsonify({"jinxes": [], "error": None})
     return jsonify({"jinxes": _serialize_jinxes_from_dir(project_dir), "error": None})
-
 @app.route("/api/npcsql/run_model", methods=["POST"])
 def run_npcsql_model():
     """Execute a single SQL model using ModelCompiler"""
     try:
         from npcpy.sql.npcsql import ModelCompiler
-
         data = request.json
         models_dir = data.get("modelsDir")
         model_name = data.get("modelName")
@@ -3643,107 +3130,84 @@ def run_npcsql_model():
         if not npc_directory:
             return jsonify({"success": False, "error": "npcDirectory is required"}), 400
         target_db = data.get("targetDb", app.config.get('DB_PATH'))
-
         if not models_dir or not model_name:
             return jsonify({"success": False, "error": "modelsDir and modelName are required"}), 400
-
         if not os.path.exists(models_dir):
             return jsonify({"success": False, "error": f"Models directory not found: {models_dir}"}), 404
-
         compiler = ModelCompiler(
             models_dir=models_dir,
             target_engine=target_db,
             npc_directory=npc_directory
         )
-
         compiler.discover_models()
-
         if model_name not in compiler.models:
             available = list(compiler.models.keys())
             return jsonify({
                 "success": False,
                 "error": f"Model '{model_name}' not found. Available: {available}"
             }), 404
-
         result_df = compiler.execute_model(model_name)
         row_count = len(result_df) if result_df is not None else 0
-
         return jsonify({
             "success": True,
             "rows": row_count,
             "message": f"Model '{model_name}' executed successfully. {row_count} rows materialized."
         })
-
     except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
-
 @app.route("/api/npcsql/run_all", methods=["POST"])
 def run_all_npcsql_models():
     """Execute all SQL models in dependency order using ModelCompiler"""
     try:
         from npcpy.sql.npcsql import ModelCompiler
-
         data = request.json
         models_dir = data.get("modelsDir")
         npc_directory = data.get("npcDirectory")
         if not npc_directory:
             return jsonify({"success": False, "error": "npcDirectory is required"}), 400
         target_db = data.get("targetDb", app.config.get('DB_PATH'))
-
         if not models_dir:
             return jsonify({"success": False, "error": "modelsDir is required"}), 400
-
         if not os.path.exists(models_dir):
             return jsonify({"success": False, "error": f"Models directory not found: {models_dir}"}), 404
-
         compiler = ModelCompiler(
             models_dir=models_dir,
             target_engine=target_db,
             npc_directory=npc_directory
         )
-
         results = compiler.run_all_models()
-
         summary = {
             name: len(df) if df is not None else 0
             for name, df in results.items()
         }
-
         return jsonify({
             "success": True,
             "models_executed": list(results.keys()),
             "row_counts": summary,
             "message": f"Executed {len(results)} models successfully."
         })
-
     except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
-
 @app.route("/api/npcsql/models", methods=["GET"])
 def list_npcsql_models():
     """List available SQL models in a directory"""
     try:
         from npcpy.sql.npcsql import ModelCompiler
-
         models_dir = request.args.get("modelsDir")
         if not models_dir:
             return jsonify({"success": False, "error": "modelsDir query param required"}), 400
-
         if not os.path.exists(models_dir):
             return jsonify({"models": [], "error": None})
-
         compiler = ModelCompiler(
             models_dir=models_dir,
             target_engine=app.config.get('DB_PATH'),
             npc_directory=app.config.get('user_npc_directory')
         )
-
         compiler.discover_models()
-
         models_info = []
         for name, model in compiler.models.items():
             models_info.append({
@@ -3753,15 +3217,11 @@ def list_npcsql_models():
                 "dependencies": list(model.dependencies),
                 "config": model.config
             })
-
         return jsonify({"models": models_info, "error": None})
-
     except Exception as e:
         import traceback
         traceback.print_exc()
         return jsonify({"models": [], "error": str(e)}), 500
-
-
 @app.route("/api/cron/crontab", methods=["GET"])
 def get_crontab():
     system = platform.system()
@@ -3795,7 +3255,6 @@ def get_crontab():
             if r.returncode == 0:
                 result["services"] = r.stdout
     return jsonify(result)
-
 @app.route("/api/cron/daemons", methods=["GET"])
 def list_system_daemons():
     system = platform.system()
@@ -3813,7 +3272,6 @@ def list_system_daemons():
         r = subprocess.run(["tasklist", "/fo", "CSV", "/nh"], capture_output=True, text=True)
         result["services"] = r.stdout if r.returncode == 0 else ""
     return jsonify(result)
-
 @app.route("/api/cron/service-info/<unit>", methods=["GET"])
 def get_service_info(unit):
     """Return unit file contents and recent journal logs for a systemd service."""
@@ -3836,13 +3294,11 @@ def get_service_info(unit):
         if r2.returncode == 0:
             result["journal"] = r2.stdout
     return jsonify(result)
-
 @app.route("/api/npc_team_global")
 def get_npc_team_global():
     npc_data = []
     seen_names = set()
     registered_teams = _parse_registered_teams()
-
     search_dirs = []
     user_dir = app.config.get('user_npc_directory')
     if user_dir and os.path.exists(user_dir):
@@ -3850,7 +3306,6 @@ def get_npc_team_global():
     for p in registered_teams:
         if p and os.path.isdir(p):
             search_dirs.append(p)
-
     for team_dir in search_dirs:
         try:
             team = Team(team_path=team_dir)
@@ -3861,24 +3316,19 @@ def get_npc_team_global():
                     npc_data.append(d)
         except Exception as e:
             print(f"Error loading team from {team_dir}: {e}")
-
     return jsonify({"npcs": npc_data, "error": None})
-
 @app.route("/api/npc_team_project", methods=["GET"])
 def get_npc_team_project():
     project_npc_directory = request.args.get("currentPath")
     if not project_npc_directory:
         return jsonify({"npcs": [], "error": "currentPath required"}), 400
-
     if not project_npc_directory.endswith("npc_team"):
         project_npc_directory = os.path.join(
             project_npc_directory,
             "npc_team"
         )
-
     if not os.path.exists(project_npc_directory):
         return jsonify({"npcs": [], "error": None})
-
     try:
         team = Team(team_path=project_npc_directory)
         npc_data = []
@@ -3889,9 +3339,7 @@ def get_npc_team_project():
     except Exception as e:
         print(f"Error loading project team from {project_npc_directory}: {e}")
         npc_data = []
-
     return jsonify({"npcs": npc_data, "error": None})
-
 @app.route("/api/npc_team_from_path", methods=["GET"])
 def get_npc_team_from_path():
     team_path = request.args.get("path")
@@ -3908,7 +3356,6 @@ def get_npc_team_from_path():
     except Exception as e:
         print(f"Error loading team from {team_path}: {e}")
         return jsonify({"npcs": [], "error": str(e)})
-
 @app.route("/api/npc-team/import", methods=["POST"])
 def import_npc_team():
     """
@@ -3917,16 +3364,13 @@ def import_npc_team():
     """
     import tempfile
     import shutil as _shutil
-
     data = request.json or {}
     repo_url = data.get("repoUrl", "").strip()
     scope = data.get("scope", "global")
     current_path = data.get("currentPath", "")
     branch = data.get("branch", "")
-
     if not repo_url:
         return jsonify({"error": "repoUrl is required"}), 400
-
     if scope == "global":
         target = app.config.get('user_npc_directory')
         if not target:
@@ -3935,20 +3379,17 @@ def import_npc_team():
         if not current_path:
             return jsonify({"error": "currentPath required for project scope"}), 400
         target = os.path.join(current_path, "npc_team")
-
     try:
         with tempfile.TemporaryDirectory() as tmp_dir:
             clone_cmd = ["git", "clone", "--depth", "1"]
             if branch:
                 clone_cmd += ["-b", branch]
             clone_cmd += [repo_url, tmp_dir]
-
             result = subprocess.run(
                 clone_cmd, capture_output=True, text=True, timeout=120
             )
             if result.returncode != 0:
                 return jsonify({"error": f"Git clone failed: {result.stderr.strip()}"}), 400
-
             npc_team_src = os.path.join(tmp_dir, "npc_team")
             if not os.path.isdir(npc_team_src):
                 for item in os.listdir(tmp_dir):
@@ -3956,17 +3397,14 @@ def import_npc_team():
                     if os.path.isdir(candidate):
                         npc_team_src = candidate
                         break
-
             if not os.path.isdir(npc_team_src):
                 return jsonify({"error": "No npc_team/ directory found in repository"}), 404
-
             imported = {"jinxes": 0, "npcs": 0, "contexts": 0, "other": 0}
             for root, dirs, files in os.walk(npc_team_src):
                 dirs[:] = [d for d in dirs if d != '.git']
                 rel = os.path.relpath(root, npc_team_src)
                 dest_dir = os.path.join(target, rel) if rel != '.' else target
                 os.makedirs(dest_dir, exist_ok=True)
-
                 for f in files:
                     src_file = os.path.join(root, f)
                     dst_file = os.path.join(dest_dir, f)
@@ -3979,15 +3417,12 @@ def import_npc_team():
                         imported["contexts"] += 1
                     else:
                         imported["other"] += 1
-
         return jsonify({"status": "success", "imported": imported, "target": target, "error": None})
     except subprocess.TimeoutExpired:
         return jsonify({"error": "Git clone timed out (120s limit)"}), 504
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 def get_ctx_path(is_global, current_path=None, create_default=False):
     """Determines the path to the .ctx file."""
     if is_global:
@@ -4004,7 +3439,6 @@ def get_ctx_path(is_global, current_path=None, create_default=False):
     else:
         if not current_path:
             return None
-
         ctx_dir = os.path.join(current_path, "npc_team")
         ctx_files = glob.glob(os.path.join(ctx_dir, "*.ctx"))
         if ctx_files:
@@ -4012,15 +3446,12 @@ def get_ctx_path(is_global, current_path=None, create_default=False):
         elif create_default:
             return os.path.join(ctx_dir, "team.ctx")
         return None
-
 def read_ctx_file(file_path):
     """Reads and parses a YAML .ctx file, normalizing list of strings to list of objects."""
     if file_path and os.path.exists(file_path):
         with open(file_path, 'r') as f:
             try:
                 data = yaml.safe_load(f) or {}
-
-                
                 if 'databases' in data and isinstance(data['databases'], list):
                     normalized = []
                     for item in data['databases']:
@@ -4029,37 +3460,26 @@ def read_ctx_file(file_path):
                         else:
                             normalized.append({"path": str(item)})
                     data['databases'] = normalized
-                
-                
                 if 'mcp_servers' in data and isinstance(data['mcp_servers'], list):
                     data['mcp_servers'] = [
                         item if isinstance(item, dict) and 'value' in item
                         else {"value": item}
                         for item in data['mcp_servers']
                     ]
-
-                
                 if 'preferences' in data and isinstance(data['preferences'], list):
                     data['preferences'] = [{"value": item} for item in data['preferences']]
-
                 if 'websites' in data and isinstance(data['websites'], list):
                     data['websites'] = [{"value": item} for item in data['websites']]
-
                 return data
             except yaml.YAMLError as e:
                 print(f"YAML parsing error in {file_path}: {e}")
                 return {"error": "Failed to parse YAML."}
     return {} 
-
 def write_ctx_file(file_path, data):
     """Writes a dictionary to a YAML .ctx file, denormalizing list of objects back to strings."""
     if not file_path:
         return False
-    
-    
     data_to_save = json.loads(json.dumps(data)) 
-
-    
     if 'databases' in data_to_save and isinstance(data_to_save['databases'], list):
         normalized = []
         for item in data_to_save['databases']:
@@ -4071,8 +3491,6 @@ def write_ctx_file(file_path, data):
             elif isinstance(item, str):
                 normalized.append(item)
         data_to_save['databases'] = normalized
-    
-    
     if 'mcp_servers' in data_to_save and isinstance(data_to_save['mcp_servers'], list):
         normalized = []
         for item in data_to_save['mcp_servers']:
@@ -4085,19 +3503,14 @@ def write_ctx_file(file_path, data):
             elif isinstance(item, str):
                 normalized.append(item)
         data_to_save['mcp_servers'] = normalized
-
-    
     if 'preferences' in data_to_save and isinstance(data_to_save['preferences'], list):
         data_to_save['preferences'] = [item.get("value", "") for item in data_to_save['preferences'] if isinstance(item, dict)]
-
     if 'websites' in data_to_save and isinstance(data_to_save['websites'], list):
         data_to_save['websites'] = [item.get("value", "") for item in data_to_save['websites'] if isinstance(item, dict)]
-
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
     with open(file_path, 'w') as f:
         yaml.dump(data_to_save, f, default_flow_style=False, sort_keys=False)
     return True
-
 @app.route("/api/context/global", methods=["GET"])
 def get_global_context():
     """Gets the global team.ctx content."""
@@ -4108,7 +3521,6 @@ def get_global_context():
     except Exception as e:
         print(f"Error getting global context: {e}")
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/context/global", methods=["POST"])
 def save_global_context():
     """Saves the global team.ctx content."""
@@ -4122,7 +3534,6 @@ def save_global_context():
     except Exception as e:
         print(f"Error saving global context: {e}")
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/context/project", methods=["GET"])
 def get_project_context():
     """Gets the project-specific team.ctx content."""
@@ -4130,14 +3541,12 @@ def get_project_context():
         current_path = request.args.get("path")
         if not current_path:
             return jsonify({"error": "Project path is required."}), 400
-        
         ctx_path = get_ctx_path(is_global=False, current_path=current_path)
         data = read_ctx_file(ctx_path)
         return jsonify({"context": data, "path": ctx_path, "error": None})
     except Exception as e:
         print(f"Error getting project context: {e}")
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/context/project", methods=["POST"])
 def save_project_context():
     """Saves the project-specific team.ctx content."""
@@ -4145,10 +3554,8 @@ def save_project_context():
         data = request.json
         current_path = data.get("path")
         context_data = data.get("context", {})
-
         if not current_path:
             return jsonify({"error": "Project path is required."}), 400
-
         ctx_path = get_ctx_path(is_global=False, current_path=current_path)
         if write_ctx_file(ctx_path, context_data):
             return jsonify({"message": "Project context saved.", "error": None})
@@ -4157,31 +3564,25 @@ def save_project_context():
     except Exception as e:
         print(f"Error saving project context: {e}")
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/context/project/init", methods=["POST"])
 def init_project_team():
     """Initialize a new npc_team folder in the project directory."""
     try:
         data = request.json
         project_path = data.get("path")
-
         if not project_path:
             return jsonify({"error": "Project path is required."}), 400
-
         result = initialize_npc_project(directory=project_path)
         return jsonify({"message": "Project team initialized.", "path": result, "error": None})
     except Exception as e:
         print(f"Error initializing project team: {e}")
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/npc-team/status", methods=["GET"])
 def npc_team_sync_status_endpoint():
     try:
         return jsonify(team_sync_status(request.args.get("team_path")))
     except Exception as e:
         return jsonify({"status": "unavailable", "error": str(e)})
-
 @app.route("/api/npc-team/init", methods=["POST"])
 def npc_team_sync_init_endpoint():
     try:
@@ -4189,7 +3590,6 @@ def npc_team_sync_init_endpoint():
         return jsonify(team_sync_init(data.get("team_path")))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/npc-team/sync", methods=["POST"])
 def npc_team_sync_pull_endpoint():
     try:
@@ -4200,7 +3600,6 @@ def npc_team_sync_pull_endpoint():
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/npc-team/resolve", methods=["POST"])
 def npc_team_sync_resolve_endpoint():
     try:
@@ -4216,7 +3615,6 @@ def npc_team_sync_resolve_endpoint():
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/npc-team/commit", methods=["POST"])
 def npc_team_sync_commit_endpoint():
     try:
@@ -4224,24 +3622,20 @@ def npc_team_sync_commit_endpoint():
         return jsonify(team_sync_commit(data.get("team_path"), data.get("message", "Update NPC team")))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/npc-team/diff", methods=["GET"])
 def npc_team_sync_diff_endpoint():
     try:
         return jsonify(team_sync_diff(request.args.get("team_path"), request.args.get("file")))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/context/websites", methods=["GET"])
 def get_context_websites():
     """Gets the websites list from a .ctx file."""
     try:
         current_path = request.args.get("path")
         is_global = request.args.get("global", "false").lower() == "true"
-        
         ctx_path = get_ctx_path(is_global=is_global, current_path=current_path)
         data = read_ctx_file(ctx_path)
-        
         websites = data.get("websites", [])
         if isinstance(websites, list):
             normalized = []
@@ -4251,7 +3645,6 @@ def get_context_websites():
                 elif isinstance(item, dict):
                     normalized.append(item)
             websites = normalized
-        
         return jsonify({
             "websites": websites,
             "path": ctx_path,
@@ -4260,7 +3653,6 @@ def get_context_websites():
     except Exception as e:
         print(f"Error getting websites from context: {e}")
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/context/websites", methods=["POST"])
 def save_context_websites():
     """Saves the websites list to a .ctx file."""
@@ -4269,23 +3661,17 @@ def save_context_websites():
         websites = data.get("websites", [])
         current_path = data.get("path")
         is_global = data.get("global", False)
-        
         ctx_path = get_ctx_path(is_global=is_global, current_path=current_path, create_default=True)
-        
         if not ctx_path:
             return jsonify({"error": "Could not determine ctx file path. Provide a path or use global=true."}), 400
-        
         existing_data = read_ctx_file(ctx_path) or {}
-        
         normalized_websites = []
         for item in websites:
             if isinstance(item, dict) and "value" in item:
                 normalized_websites.append(item["value"])
             elif isinstance(item, str):
                 normalized_websites.append(item)
-        
         existing_data["websites"] = normalized_websites
-        
         if write_ctx_file(ctx_path, existing_data):
             return jsonify({
                 "message": "Websites saved to context.",
@@ -4295,11 +3681,9 @@ def save_context_websites():
             })
         else:
             return jsonify({"error": "Failed to write context file."}), 500
-            
     except Exception as e:
         print(f"Error saving websites to context: {e}")
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/get_attachment_response", methods=["POST"])
 def get_attachment_response():
     data = request.json
@@ -4310,24 +3694,18 @@ def get_attachment_response():
     if current_path:
         loaded_vars = load_project_env(current_path)
         print(f"Loaded project env variables for attachment response: {list(loaded_vars.keys())}")
-    
-    
     npc_object = None
     if npc_name:
         npc_object = load_npc_by_name_and_source(npc_name, npc_source, current_path)
-
         if not npc_object and npc_source == 'project':
             print(f"NPC {npc_name} not found in project directory, trying global...")
             npc_object = load_npc_by_name_and_source(npc_name, 'global')
-
         if npc_object:
             print(f"Successfully loaded NPC {npc_name} from {npc_source} directory")
         else:
             print(f"Warning: Could not load NPC {npc_name}")
-    
     images = []
     attachments_loaded = []
-    
     for attachment in attachments:
         extension = attachment["name"].split(".")[-1]
         extension_mapped = extension_map.get(extension.upper(), "others")
@@ -4339,7 +3717,6 @@ def get_attachment_response():
         _type_base = _type_dir_map.get(extension_mapped, os.path.join(get_attachments_dir(), extension_mapped))
         os.makedirs(_type_base, exist_ok=True)
         file_path = os.path.join(_type_base, attachment["name"])
-        
         if extension_mapped == "images":
             ImageFile.LOAD_TRUNCATED_IMAGES = True
             img = Image.open(attachment["path"])
@@ -4352,11 +3729,9 @@ def get_attachment_response():
                 "name": attachment["name"], "type": extension_mapped,
                 "data": img_byte_arr.read(), "size": os.path.getsize(file_path)
             })
-
     message_to_send = messages[-1]["content"]
     if isinstance(message_to_send, list):
         message_to_send = message_to_send[0]
-
     response = get_llm_response(
         message_to_send,
         images=images,
@@ -4365,18 +3740,14 @@ def get_attachment_response():
         provider=provider,
         npc=npc_object,
     )
-    
     messages = response["messages"]
     response = response["response"]
-
     return jsonify({
         "status": "success",
         "message": response,
         "conversationId": conversation_id,
         "messages": messages,
     })
-
-                                                                                                                                                                                                           
 IMAGE_MODELS = {
     "ollama": [
         {"value": "x/z-image-turbo", "display_name": "Z-Image Turbo (6B)"},
@@ -4447,7 +3818,6 @@ IMAGE_MODELS = {
         {"value": "ideogram-v2-turbo", "display_name": "Ideogram v2 Turbo"},
     ],
 }
-
 IMAGE_PROVIDER_API_KEYS = {
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
@@ -4462,9 +3832,7 @@ IMAGE_PROVIDER_API_KEYS = {
     "leonardo": "LEONARDO_API_KEY",
     "ideogram": "IDEOGRAM_API_KEY",
 }
-
 def _get_finetuned_models_internal(current_path=None):
-    
     potential_root_paths = [
         get_models_dir(),
         get_images_dir(),
@@ -4473,27 +3841,20 @@ def _get_finetuned_models_internal(current_path=None):
         project_models_path = os.path.join(current_path, 'models')
         project_images_path = os.path.join(current_path, 'images')
         potential_root_paths.extend([project_models_path, project_images_path])
-
     finetuned_models = []
-    
     print(f"🌋 (Internal) Searching for fine-tuned models in potential root paths: {set(potential_root_paths)}")
-
     for root_path in set(potential_root_paths):
         if not os.path.exists(root_path) or not os.path.isdir(root_path):
             print(f"🌋 (Internal) Skipping non-existent or non-directory root path: {root_path}")
             continue
-
         print(f"🌋 (Internal) Scanning root path: {root_path}")
         for model_dir_name in os.listdir(root_path):
             full_model_path = os.path.join(root_path, model_dir_name)
-            
             if not os.path.isdir(full_model_path):
                 print(f"🌋 (Internal) Skipping {full_model_path}: Not a directory.")
                 continue
-
             has_model_final_pt = os.path.exists(os.path.join(full_model_path, 'model_final.pt'))
             has_checkpoints_dir = os.path.isdir(os.path.join(full_model_path, 'checkpoints'))
-
             if has_model_final_pt or has_checkpoints_dir:
                 print(f"🌋 (Internal) Identified fine-tuned model: {model_dir_name} at {full_model_path} (found model_final.pt or checkpoints dir)")
                 finetuned_models.append({
@@ -4502,9 +3863,7 @@ def _get_finetuned_models_internal(current_path=None):
                     "display_name": f"{model_dir_name} | Fine-tuned Diffuser"
                 })
                 continue
-
             print(f"🌋 (Internal) Skipping {full_model_path}: No model_final.pt or checkpoints directory found at root.")
-    
     print(f"🌋 (Internal) Finished scanning. Found {len(finetuned_models)} fine-tuned models.")
     return {"models": finetuned_models, "error": None}
 def get_available_image_models(current_path=None):
@@ -4512,22 +3871,17 @@ def get_available_image_models(current_path=None):
     Retrieves available image generation models based on environment variables
     and predefined configurations, including locally fine-tuned Diffusers models.
     """
-    
     if current_path:
         load_project_env(current_path) 
-    
     all_image_models = []
-
     cfg_image_model = app.config.get('IMAGE_MODEL')
     cfg_image_provider = app.config.get('IMAGE_PROVIDER')
-
     if cfg_image_model and cfg_image_provider:
         all_image_models.append({
             "value": cfg_image_model,
             "provider": cfg_image_provider,
             "display_name": f"{cfg_image_model} | {cfg_image_provider} (Configured)"
         })
-
     for provider_key, models_list in IMAGE_MODELS.items():
         if provider_key == "diffusers":
             all_image_models.extend([
@@ -4541,7 +3895,6 @@ def get_available_image_models(current_path=None):
                     {**model, "provider": provider_key, "display_name": f"{model['display_name']} | {provider_key}"}
                     for model in models_list
                 ])
-        
     try:
         finetuned_data_result = _get_finetuned_models_internal(current_path)
         if finetuned_data_result and finetuned_data_result.get("models"):
@@ -4552,7 +3905,6 @@ def get_available_image_models(current_path=None):
                 print(f"Internal error in _get_finetuned_models_internal: {finetuned_data_result['error']}")
     except Exception as e:
         print(f"Error calling _get_finetuned_models_internal: {e}")
-
     seen_models = set()
     unique_models = []
     for model_entry in all_image_models:
@@ -4560,9 +3912,7 @@ def get_available_image_models(current_path=None):
         if key not in seen_models:
             seen_models.add(key)
             unique_models.append(model_entry)
-
     return unique_models
-
 @app.route('/api/generative_fill', methods=['POST'])
 def generative_fill():
     data = request.get_json()
@@ -4571,19 +3921,14 @@ def generative_fill():
     prompt = data.get('prompt')
     model = data.get('model')
     provider = data.get('provider')
-    
     if not all([image_path, mask_data, prompt, model, provider]):
         return jsonify({"error": "Missing required fields"}), 400
-    
     try:
         image_path = os.path.expanduser(image_path)
-        
         mask_b64 = mask_data.split(',')[1] if ',' in mask_data else mask_data
         mask_bytes = base64.b64decode(mask_b64)
         mask_image = Image.open(BytesIO(mask_bytes))
-        
         original_image = Image.open(image_path)
-        
         if provider == 'openai':
             result = inpaint_openai(original_image, mask_image, prompt, model)
         elif provider == 'gemini':
@@ -4592,30 +3937,22 @@ def generative_fill():
             result = inpaint_diffusers(original_image, mask_image, prompt, model)
         else:
             return jsonify({"error": f"Provider {provider} not supported"}), 400
-        
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"inpaint_{timestamp}.png"
         save_dir = os.path.dirname(image_path)
         result_path = os.path.join(save_dir, filename)
-        
         result.save(result_path)
-        
         return jsonify({"resultPath": result_path, "error": None})
-        
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 def inpaint_openai(image, mask, prompt, model):
     import io
     from openai import OpenAI
     from PIL import Image
     import base64
-
     client = OpenAI()
-
     original_size = image.size
-
     if model == 'dall-e-2':
         max_dim = max(image.width, image.height)
         if max_dim <= 256:
@@ -4637,26 +3974,21 @@ def inpaint_openai(image, mask, prompt, model):
             elif image.height > image.width and size == (1024, 1536):
                 target_size = size; break
         size_str = valid_sizes[target_size]
-
     resized_image = image.resize(target_size, Image.Resampling.LANCZOS)
     mask_l = mask.convert('L').resize(target_size, Image.Resampling.NEAREST)
     edit_rgba = Image.new('RGBA', target_size, (255, 255, 255, 255))
     alpha = mask_l.point(lambda v: 0 if v > 128 else 255)
     edit_rgba.putalpha(alpha)
-
     rgba_image = resized_image.convert('RGBA')
     rgba_image.putalpha(alpha)
-
     img_bytes = io.BytesIO()
     rgba_image.save(img_bytes, format='PNG')
     img_bytes.seek(0)
     img_bytes.name = 'image.png'
-
     mask_bytes = io.BytesIO()
     edit_rgba.save(mask_bytes, format='PNG')
     mask_bytes.seek(0)
     mask_bytes.name = 'mask.png'
-
     response = client.images.edit(
         model=model,
         image=img_bytes,
@@ -4665,7 +3997,6 @@ def inpaint_openai(image, mask, prompt, model):
         n=1,
         size=size_str,
     )
-
     if response.data[0].url:
         import requests
         img_data = requests.get(response.data[0].url).content
@@ -4673,50 +4004,41 @@ def inpaint_openai(image, mask, prompt, model):
         img_data = base64.b64decode(response.data[0].b64_json)
     else:
         raise Exception("No image data in response")
-
     result_image = Image.open(io.BytesIO(img_data))
     result_image = result_image.resize(original_size, Image.Resampling.LANCZOS)
-
     full_mask_l = mask.convert('L').resize(original_size, Image.Resampling.NEAREST)
     base = image.convert('RGBA')
     over = result_image.convert('RGBA')
     composed = Image.composite(over, base, full_mask_l)
     return composed.convert(image.mode if image.mode in ('RGB', 'RGBA') else 'RGB')
-
 def inpaint_diffusers(image, mask, prompt, model):
     from diffusers import StableDiffusionInpaintPipeline
     import torch
-    
     pipe = StableDiffusionInpaintPipeline.from_pretrained(
         model,
         torch_dtype=torch.float16
     )
     pipe = pipe.to("cuda" if torch.cuda.is_available() else "cpu")
-    
     result = pipe(
         prompt=prompt,
         image=image,
         mask_image=mask
     ).images[0]
-    
     return result
 def inpaint_gemini(image, mask, prompt, model):
     from npcpy.gen.image_gen import generate_image
     import io
     import numpy as np
     from PIL import Image as PILImage
-
     mask_l = mask.convert('L').resize(image.size, PILImage.NEAREST)
     mask_np = np.array(mask_l)
     ys, xs = np.where(mask_np > 128)
     if len(xs) == 0:
         return image
-
     x_center = int(np.mean(xs))
     y_center = int(np.mean(ys))
     width_pct = (xs.max() - xs.min()) / image.width * 100
     height_pct = (ys.max() - ys.min()) / image.height * 100
-
     position = "center"
     if y_center < image.height / 3:
         position = "top"
@@ -4726,11 +4048,9 @@ def inpaint_gemini(image, mask, prompt, model):
         position += " left"
     elif x_center > 2 * image.width / 3:
         position += " right"
-
     img_bytes = io.BytesIO()
     image.save(img_bytes, format='PNG')
     img_bytes.seek(0)
-
     full_prompt = (
         f"Using the provided image, change only the region in the {position} "
         f"(approximately {int(width_pct)}% wide by {int(height_pct)}% tall) to: {prompt}.\n\n"
@@ -4738,7 +4058,6 @@ def inpaint_gemini(image, mask, prompt, model):
         "You are in-painting the image. Do NOT alter anything outside that region. "
         "Return an image with the same dimensions as the input."
     )
-
     results = generate_image(
         prompt=full_prompt,
         model=model,
@@ -4748,17 +4067,14 @@ def inpaint_gemini(image, mask, prompt, model):
     )
     if not results:
         return None
-
     gen = results[0]
     if gen.size != image.size:
         gen = gen.resize(image.size, PILImage.LANCZOS)
-
     base = image.convert('RGBA')
     over = gen.convert('RGBA')
     alpha = mask_l
     composed = PILImage.composite(over, base, alpha)
     return composed.convert(image.mode if image.mode in ('RGB', 'RGBA') else 'RGB')
-
 @app.route('/api/generate_images', methods=['POST'])
 def generate_images():
     data = request.get_json()
@@ -4769,31 +4085,19 @@ def generate_images():
     attachments = data.get('attachments', [])
     base_filename = data.get('base_filename', 'vixynt_gen')  
     save_dir = data.get('currentPath', get_images_dir())     
-
     if not prompt:
         return jsonify({"error": "Prompt is required."}), 400
-
     if not model_name or not provider_name:
         return jsonify({"error": "Image model and provider are required."}), 400
-
-    
     save_dir = os.path.expanduser(save_dir)
     os.makedirs(save_dir, exist_ok=True)
-
-    
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     base_filename_with_time = f"{base_filename}_{timestamp}"
-
     generated_images_base64 = []
     generated_filenames = []
-
-
-    
     try:
-        
         input_images = []
         attachments_loaded = []
-        
         if attachments:
             for attachment in attachments:
                 print(attachment)
@@ -4805,7 +4109,6 @@ def generate_images():
                             pil_img = pil_img.convert("RGB")
                             pil_img.thumbnail((1024, 1024))
                             input_images.append(pil_img)
-                            
                             compressed_bytes = BytesIO()
                             pil_img.save(compressed_bytes, format="JPEG", quality=85, optimize=True)
                             img_data = compressed_bytes.getvalue()
@@ -4817,8 +4120,6 @@ def generate_images():
                             })
                         except Exception as e:
                             print(f"Warning: Could not load attachment image {image_path}: {e}")
-
-        
         images_list = gen_image(
             prompt, 
             model=model_name, 
@@ -4829,32 +4130,23 @@ def generate_images():
         print(images_list)
         if not isinstance(images_list, list):
             images_list = [images_list] if images_list is not None else []
-
         generated_attachments = []
         for i, pil_image in enumerate(images_list):
             if isinstance(pil_image, Image.Image):
-                
                 filename = f"{base_filename_with_time}_{i+1:03d}.png" if n > 1 else f"{base_filename_with_time}.png"
                 filepath = os.path.join(save_dir, filename)
                 print(f'saved file to {filepath}')
-                
-                
                 pil_image.save(filepath, format="PNG")
                 generated_filenames.append(filepath)
-                
-                
                 buffered = BytesIO()
                 pil_image.save(buffered, format="PNG")
                 img_data = buffered.getvalue()
-                
                 generated_attachments.append({
                     "name": filename,
                     "type": "images", 
                     "data": img_data,
                     "size": len(img_data)
                 })
-                
-                
                 img_str = base64.b64encode(img_data).decode("utf-8")
                 generated_images_base64.append(f"data:image/png;base64,{img_str}")
             else:
@@ -4871,7 +4163,6 @@ def generate_images():
                         converted = Image.open(BytesIO(resp.content))
                 except Exception as _e:
                     print(f"Warning: failed to unwrap image object ({type(pil_image)}): {_e}")
-
                 if converted is not None:
                     filename = f"{base_filename_with_time}_{i+1:03d}.png" if n > 1 else f"{base_filename_with_time}.png"
                     filepath = os.path.join(save_dir, filename)
@@ -4891,19 +4182,15 @@ def generate_images():
                     print(f"saved file to {filepath} (unwrapped from {type(pil_image).__name__})")
                 else:
                     print(f"Warning: gen_image returned non-PIL object ({type(pil_image)}). Skipping image conversion.")
-
-        
         return jsonify({
             "images": generated_images_base64, 
             "filenames": generated_filenames,
-            "generation_id": generation_id,  
             "error": None
         })
     except Exception as e:
         print(f"Image generation error: {str(e)}")
         traceback.print_exc()
         return jsonify({"images": [], "filenames": [], "error": str(e)}), 500
-
 @app.route("/api/mcp_tools", methods=["GET"])
 def get_mcp_tools():
     """
@@ -4917,10 +4204,8 @@ def get_mcp_tools():
     npc_name = request.args.get("npc")
     selected_filter = request.args.get("selected", "")
     selected_names = [s.strip() for s in selected_filter.split(",") if s.strip()]
-    
     if not raw_server_path:
         return jsonify({"error": "mcpServerPath parameter is required."}), 400
-
     resolved_path = resolve_mcp_server_path(
         current_path=current_path_arg,
         explicit_path=raw_server_path,
@@ -4930,11 +4215,9 @@ def get_mcp_tools():
         server_path = resolved_path.strip()
     else:
         server_path = os.path.abspath(os.path.expanduser(resolved_path))
-
     temp_mcp_client = None
     jinx_tools = []
     try:
-        
         if conversation_id and npc_name and hasattr(app, 'corca_states'):
             state_key = f"{conversation_id}_{npc_name or 'default'}"
             if state_key in app.corca_states:
@@ -4951,8 +4234,6 @@ def get_mcp_tools():
                     else:
                         temp_mcp_client.disconnect_sync()
                         existing_corca_state.mcp_client = None
-
-
         print(f"Creating a temporary MCP client to fetch tools for {server_path}.")
         temp_mcp_client = MCPClientNPC()
         if temp_mcp_client.connect_sync(server_path):
@@ -4984,13 +4265,11 @@ def get_mcp_tools():
         print(f"Error getting MCP tools for {server_path}: {traceback.format_exc()}")
         return jsonify({"error": f"An unexpected error occurred: {e}"}), 500
     finally:
-        
         if temp_mcp_client and temp_mcp_client.session and (
             not (conversation_id and npc_name and hasattr(app, 'corca_states') and state_key in app.corca_states and getattr(app.corca_states[state_key], 'mcp_client', None) == temp_mcp_client)
         ):
             print(f"Disconnecting temporary MCP client for {server_path}.")
             temp_mcp_client.disconnect_sync()
-
 def _parse_registered_teams():
     """Parse registered_teams from request query params (comma-separated paths)."""
     raw = request.args.get('registered_teams', '')
@@ -5000,7 +4279,6 @@ def _parse_registered_teams():
     if teams_dict:
         return [p for p in teams_dict.values() if isinstance(p, str) and p.strip()]
     return []
-
 @app.route("/api/npc_tools", methods=["GET"])
 def get_npc_tools():
     """
@@ -5011,17 +4289,14 @@ def get_npc_tools():
     team_path_param = request.args.get("team_path")
     current_path_arg = request.args.get("currentPath")
     registered_teams = _parse_registered_teams()
-
     try:
         from npcpy.npc_compiler import NPC, Team, build_jinx_tool_catalog
-
         team_obj = None
         if team_path_param and os.path.isdir(team_path_param):
             try:
                 team_obj = Team(team_path=team_path_param)
             except Exception as e:
                 print(f"[npc_tools] Failed to load team from {team_path_param}: {e}")
-
         npc_obj = None
         if npc_name_param and team_obj and npc_name_param in team_obj.npcs:
             npc_obj = team_obj.npcs[npc_name_param]
@@ -5040,7 +4315,6 @@ def get_npc_tools():
                     except Exception as e:
                         print(f"[npc_tools] Failed to load team/NPC from {d}: {e}")
                     break
-
         npc_tools = []
         if npc_obj:
             if not hasattr(app, 'mcp_clients_cache'):
@@ -5064,7 +4338,6 @@ def get_npc_tools():
             except Exception as e:
                 print(f"[npc_tools] Error resolving tools: {e}")
                 traceback.print_exc()
-
         team_servers = []
         if team_obj and hasattr(team_obj, "mcp_servers"):
             for srv in (team_obj.mcp_servers or []):
@@ -5073,7 +4346,6 @@ def get_npc_tools():
                 elif isinstance(srv, dict):
                     label = srv.get("path") or srv.get("url") or f"{srv.get('command', '')} {' '.join(srv.get('args', []))}"
                     team_servers.append({**srv, "label": label, "enabled": False})
-
         return jsonify({
             "npc_tools": npc_tools,
             "team_servers": team_servers,
@@ -5082,7 +4354,6 @@ def get_npc_tools():
     except Exception as e:
         print(f"[npc_tools] Error: {traceback.format_exc()}")
         return jsonify({"error": str(e), "npc_tools": [], "team_servers": []}), 500
-
 @app.route("/api/mcp/server/resolve", methods=["GET"])
 def api_mcp_resolve():
     current_path = request.args.get("currentPath")
@@ -5092,7 +4363,6 @@ def api_mcp_resolve():
         return jsonify({"serverPath": resolved, "error": None})
     except Exception as e:
         return jsonify({"serverPath": None, "error": str(e)}), 500
-
 @app.route("/api/mcp/server/start", methods=["POST"])
 def api_mcp_start():
     data = request.get_json() or {}
@@ -5110,7 +4380,6 @@ def api_mcp_start():
         print(f"Error starting MCP server: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/mcp/server/stop", methods=["POST"])
 def api_mcp_stop():
     data = request.get_json() or {}
@@ -5124,7 +4393,6 @@ def api_mcp_stop():
         print(f"Error stopping MCP server: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/mcp/server/status", methods=["GET"])
 def api_mcp_status():
     explicit = request.args.get("serverPath")
@@ -5143,7 +4411,6 @@ def api_mcp_status():
         print(f"Error checking MCP server status: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/image_models", methods=["GET"]) 
 def get_image_models_api():
     """
@@ -5158,7 +4425,6 @@ def get_image_models_api():
         print(f"Error getting available image models: {str(e)}")
         traceback.print_exc()
         return jsonify({"models": [], "error": str(e)}), 500
-
 @app.route("/api/generate_video", methods=["POST"])
 def generate_video_api():
     """
@@ -5173,24 +4439,18 @@ def generate_video_api():
         output_dir = data.get("output_dir")
         negative_prompt = data.get("negative_prompt", "")
         reference_image = data.get("reference_image")
-
         if not prompt:
             return jsonify({"error": "Prompt is required"}), 400
-
         if output_dir:
             save_dir = os.path.expanduser(output_dir)
         else:
             save_dir = get_videos_dir()
         os.makedirs(save_dir, exist_ok=True)
-
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         output_filename = f"video_{timestamp}.mp4"
         output_path = os.path.join(save_dir, output_filename)
-
         num_frames = int(duration * 25) if provider == "diffusers" else 25
-
         print(f"Generating video with model={model}, provider={provider}, duration={duration}s")
-
         result = gen_video(
             prompt=prompt,
             model=model,
@@ -5199,14 +4459,12 @@ def generate_video_api():
             num_frames=num_frames,
             negative_prompt=negative_prompt,
         )
-
         if result and "output" in result:
             video_path = output_path
             if os.path.exists(video_path):
                 with open(video_path, "rb") as f:
                     video_data = f.read()
                 video_base64 = base64.b64encode(video_data).decode("utf-8")
-
                 return jsonify({
                     "success": True,
                     "video_path": video_path,
@@ -5217,12 +4475,10 @@ def generate_video_api():
                 return jsonify({"error": "Video file was not created"}), 500
         else:
             return jsonify({"error": result.get("output", "Video generation failed")}), 500
-
     except Exception as e:
         print(f"Error generating video: {e}")
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/video_models", methods=["GET"])
 def get_video_models_api():
     """
@@ -5235,14 +4491,11 @@ def get_video_models_api():
         {"value": "damo-vilab/text-to-video-ms-1.7b", "display_name": "ModelScope 1.7B (Local) | diffusers", "provider": "diffusers", "max_duration": 4},
     ]
     return jsonify({"models": video_models, "error": None})
-
 @app.route("/api/text_predict", methods=["POST"])
 def text_predict():
     data = request.json
     stream_id = _setup_stream(data)
-
     print(f"Starting text prediction stream with ID: {stream_id}")
-
     text_content = data.get("text_content", "")
     cursor_position = data.get("cursor_position", len(text_content))
     current_path = data.get("currentPath")
@@ -5250,12 +4503,9 @@ def text_predict():
     provider = data.get("provider")
     context_type = data.get("context_type", "general")
     file_path = data.get("file_path")
-
     if current_path:
         load_project_env(current_path)
-
     text_before_cursor = text_content[:cursor_position]
-
     if context_type == 'code':
         prompt_for_llm = f"You are an AI code completion assistant. Your task is to complete the provided code snippet.\nYou MUST ONLY output the code that directly completes the snippet.\nDO NOT include any explanations, comments, or additional text.\nDO NOT wrap the completion in markdown code blocks.\n\nHere is the code context where the completion should occur (file: {file_path or 'unknown'}):\n\n{text_before_cursor}\n\nPlease provide the completion starting from the end of the last line shown.\n"
         system_prompt = "You are an AI code completion assistant. Only provide code. Do not add explanations or any other text."
@@ -5265,14 +4515,11 @@ def text_predict():
     else:
         prompt_for_llm = f"You are an AI text completion assistant. Your task is to provide a natural and helpful completion to the user's ongoing text.\nYou MUST ONLY output the text that directly completes the snippet.\nDO NOT include any explanations or additional text.\n\nHere is the text context where the completion should occur:\n\n{text_before_cursor}\n\nPlease provide the completion starting from the end of the last line shown.\n"
         system_prompt = "You are an AI text completion assistant. Only provide natural language completion. Do not add explanations or any other text."
-
     npc_object = None
-
     messages_for_llm = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt_for_llm}
     ]
-
     def event_stream_text_predict(current_stream_id):
         complete_prediction = []
         try:
@@ -5285,7 +4532,6 @@ def text_predict():
                 stream=True,
                 think=False,
             )
-
             if isinstance(stream_response_generator, dict) and 'response' in stream_response_generator:
                 stream_generator = stream_response_generator['response']
             else:
@@ -5294,17 +4540,14 @@ def text_predict():
                     output_content = stream_response_generator['output']
                 elif isinstance(stream_response_generator, str):
                     output_content = stream_response_generator
-
                 yield f"data: {json.dumps({'choices': [{'delta': {'content': output_content}}]})}\n\n"
                 yield f"data: [DONE]\n\n"
                 return
-
             for response_chunk in stream_generator:
                 with cancellation_lock:
                     if cancellation_flags.get(current_stream_id, False):
                         print(f"Cancellation flag triggered for {current_stream_id}. Breaking loop.")
                         break
-
                 chunk_content = ""
                 if "hf.co" in model or provider == 'ollama':
                     msg = response_chunk["message"] if "message" in response_chunk else None
@@ -5312,35 +4555,28 @@ def text_predict():
                         chunk_content = msg.get("content", "") or msg.get("thinking", "")
                 else:
                     chunk_content = "".join(choice.delta.content for choice in response_chunk.choices if choice.delta.content is not None)
-
                 print(chunk_content, end='')
-
                 if chunk_content:
                     complete_prediction.append(chunk_content)
                     yield f"data: {json.dumps({'choices': [{'delta': {'content': chunk_content}}]})}\n\n"
-
         except Exception as e:
             print(f"\nAn exception occurred during text prediction streaming for {current_stream_id}: {e}")
             traceback.print_exc()
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
-
         finally:
             print(f"\nText prediction stream {current_stream_id} finished.")
             yield f"data: [DONE]\n\n"
             _cleanup_stream(current_stream_id)
-
     return Response(event_stream_text_predict(stream_id), mimetype="text/event-stream", headers={
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no'
     })
-
 @app.route("/api/stream", methods=["POST"])
 def stream():
     data = request.json
     stream_id = _setup_stream(data)
     print(f"Starting stream with ID: {stream_id}")
-    
     commandstr = data.get("commandstr")
     conversation_id = data.get("conversationId")
     if not conversation_id:
@@ -5348,13 +4584,11 @@ def stream():
     model = data.get("model", None)
     provider = data.get("provider", None)
     print(f"🔍 Stream request - model: {model}, provider from request: {provider}")
-
     if provider is None and model:
         resolved_provider = available_models.get(model) or lookup_provider(model)
         if resolved_provider:
             provider = resolved_provider
             print(f"🔍 Provider looked up from available_models/lookup_provider: {provider}")
-
     npc_name = data.get("npc", None)
     npc_source = data.get("npcSource", "global")
     current_path = data.get("currentPath")
@@ -5377,11 +4611,9 @@ def stream():
         params["max_tokens"] = data.get("max_tokens")
     disable_thinking = data.get("disableThinking", False)
     params = params if params else None
-
     if current_path:
         loaded_vars = load_project_env(current_path)
         print(f"Loaded project env variables for stream request: {list(loaded_vars.keys())}")
-    
     npc_object = None
     team_object = None
     team = None
@@ -5407,21 +4639,15 @@ def stream():
                                 npc_object.team = team_object
                                 print(f"Found NPC {npc_name} in registered team {team_name}")
                                 break
-
                 if not npc_object and hasattr(team_object, 'forenpc') and hasattr(team_object.forenpc, 'name'):
                     if team_object.forenpc.name == npc_name:
                         npc_object = team_object.forenpc
                         npc_object.team = team_object
-
                         team = team_name
                         print(f"Found NPC {npc_name} as forenpc in team {team_name}")
                         break
-                
-
                 if npc_object:
                     break
-        
-
         if not npc_object and hasattr(app, 'registered_npcs') and npc_name in app.registered_npcs:
             npc_object = app.registered_npcs[npc_name]
             print(f"Found NPC {npc_name} in registered NPCs (no specific team)")
@@ -5452,7 +4678,6 @@ def stream():
                     print(f"[STREAM] Error loading registered team {team_path}: {e}")
                     traceback.print_exc()
                     continue
-
         if not npc_object:
             npc_object = load_npc_by_name_and_source(npc_name, npc_source, current_path)
             if not npc_object and npc_source == 'project':
@@ -5460,29 +4685,22 @@ def stream():
                 npc_object = load_npc_by_name_and_source(npc_name, 'global')
             if npc_object and hasattr(npc_object, 'npc_directory') and npc_object.npc_directory:
                 team_directory = npc_object.npc_directory
-
                 if os.path.exists(team_directory):
                     team_object = Team(team_path=team_directory)
                     print('team', team_object)
-
                 else:
                     team_object = Team(npcs=[npc_object])
                     team_object.name = os.path.basename(team_directory) if team_directory else f"{npc_name}_team"
                     npc_object.team = team_object
                     print('team', team_object)
                 team_name = team_object.name
-                
                 if not hasattr(app, 'registered_teams'):
                     app.registered_teams = {}
                 app.registered_teams[team_name] = team_object
-                
                 team = team_name
-                
                 print(f"Created and registered team '{team_name}' with NPC {npc_name}")
-            
             if npc_object:
                 npc_object.team = team_object
-
                 print(f"Successfully loaded NPC {npc_name} from {npc_source} directory")
             else:
                 print(f"Warning: Could not load NPC {npc_name}")
@@ -5490,25 +4708,20 @@ def stream():
                 print(f"Successfully loaded NPC {npc_name} from {npc_source} directory")
             else:
                 print(f"Warning: Could not load NPC {npc_name}")
-
     attachments = data.get("attachments", [])
     images: list = []
     attachment_paths_for_llm: list = []
     attachments_for_db: list = []
     print(f"[DEBUG] Received attachments: {attachments}")
-
     if attachments:
         print(f"[DEBUG] Processing {len(attachments)} attachments")
-
         for attachment in attachments:
             try:
                 file_name = attachment["name"]
                 extension = file_name.split(".")[-1].upper() if "." in file_name else ""
                 extension_mapped = extension_map.get(extension, "others")
-
                 file_path = None
                 file_content_bytes = None
-
                 if "path" in attachment and attachment["path"]:
                     file_path = attachment["path"]
                     if os.path.exists(file_path):
@@ -5523,7 +4736,6 @@ def stream():
                             file_path = os.path.join(temp_dir, file_name)
                             with open(file_path, "wb") as f:
                                 f.write(file_content_bytes)
-
                 elif "data" in attachment and attachment["data"]:
                     file_content_bytes = base64.b64decode(attachment["data"])
                     import tempfile
@@ -5531,16 +4743,12 @@ def stream():
                     file_path = os.path.join(temp_dir, file_name)
                     with open(file_path, "wb") as f:
                         f.write(file_content_bytes)
-
                 if not file_path or file_content_bytes is None:
                     print(f"Warning: Skipping attachment {file_name} - no valid path or data")
                     continue
-
                 attachment_paths_for_llm.append(file_path)
-
                 if extension_mapped == "images":
                     images.append(file_path)
-
                 attachments_for_db.append({
                     "name": file_name,
                     "path": file_path,
@@ -5548,7 +4756,6 @@ def stream():
                     "data": file_content_bytes,
                     "size": len(file_content_bytes) if file_content_bytes else 0
                 })
-
             except Exception as e:
                 print(f"Error processing attachment {attachment.get('name', 'N/A')}: {e}")
                 traceback.print_exc()
@@ -5559,16 +4766,12 @@ def stream():
         print(f"[DEBUG] Using explicit messages from frontend ({len(messages)} messages)")
     else:
         messages = []
-
     messages = clean_messages_for_llm(messages)
-
     exe_mode = data.get('executionMode','chat')
     if exe_mode == 'chat' and npc_object is not None and hasattr(npc_object, 'jinxes_dict'):
         npc_object.jinxes_dict = {}
     messages = ensure_system_prompt(messages, npc=npc_object, tool_capable=(exe_mode == 'tool_agent'))
-
     stream_response = {"output": "", "messages": messages}
-
     tool_args = {}
     if exe_mode == 'tool_agent' and npc_object is not None:
         if hasattr(npc_object, 'tools') and npc_object.tools:
@@ -5584,14 +4787,12 @@ def stream():
             tool_args['tool_map'] = npc_object.tool_map
         if 'tools' in tool_args and tool_args['tools']:
             tool_args['tool_choice'] = {"type": "auto"}
-
     api_url = None
     if npc_object is not None:
         try:
             api_url = npc_object.api_url if npc_object.api_url else None
         except AttributeError:
             api_url = None
-
     thinking_kwargs = {}
     if disable_thinking:
         if provider in ('ollama',):
@@ -5602,7 +4803,6 @@ def stream():
         thinking_kwargs['thinking'] = {"type": "enabled", "budget_tokens": 10000}
         if params and 'temperature' in params:
             del params['temperature']
-
     if exe_mode == 'chat':
         print(f"[DEBUG] Calling get_llm_response with images={images}, attachments={attachment_paths_for_llm}")
         stream_response = get_llm_response(
@@ -5623,23 +4823,19 @@ def stream():
         messages = stream_response.get('messages', messages)
     elif exe_mode == 'tool_agent':
         selected_mcp_tools_from_request = data.get("selectedMcpTools", [])
-
         if not hasattr(app, 'mcp_clients_cache'):
             app.mcp_clients_cache = {}
-
         tools_for_llm = []
         tool_executors = {}
         if npc_object and hasattr(npc_object, 'resolve_tools'):
             tools_for_llm, tool_executors = npc_object.resolve_tools(
                 mcp_clients_cache=app.mcp_clients_cache
             )
-
         extra_paths = []
         if "mcpServerPaths" in data and isinstance(data["mcpServerPaths"], list):
             extra_paths = [p for p in data["mcpServerPaths"] if p]
         elif data.get("mcpServerPath"):
             extra_paths = [data.get("mcpServerPath")]
-
         for extra_mcp_path in extra_paths:
             resolved_path = resolve_mcp_server_path(current_path, extra_mcp_path, False)
             if not resolved_path:
@@ -5667,7 +4863,6 @@ def stream():
                             "tool_func": client.tool_map.get(name),
                         }
                         existing_names.add(name)
-
         if npc_object and hasattr(npc_object, "jinx_tool_catalog"):
             jinx_tool_catalog = npc_object.jinx_tool_catalog or {}
             existing_names = {td["function"]["name"] for td in tools_for_llm}
@@ -5680,14 +4875,11 @@ def stream():
                         "jinx": npc_object.jinxes_dict.get(name),
                     }
                     existing_names.add(name)
-
         if selected_mcp_tools_from_request:
             tools_for_llm = [t for t in tools_for_llm if t["function"]["name"] in selected_mcp_tools_from_request]
             allowed = set(selected_mcp_tools_from_request)
             tool_executors = {k: v for k, v in tool_executors.items() if k in allowed}
-
         print(f"[MCP] resolved {len(tools_for_llm)} tools: {[t['function']['name'] for t in tools_for_llm]}")
-
         if not hasattr(app, 'mcp_clients'):
             app.mcp_clients = {}
         state_key = f"{conversation_id}_{npc_name or 'default'}"
@@ -5695,15 +4887,12 @@ def stream():
         if state_key not in app.mcp_clients:
             app.mcp_clients[state_key] = {"client": None, "server_path": None, "messages": messages}
         messages = app.mcp_clients[state_key].get("messages", messages)
-
         messages = clean_messages_for_llm(messages)
-
         if not messages:
             messages = []
         if not any(m.get('role') == 'system' for m in messages):
             system_prompt = npc_object.get_system_prompt(tool_capable=True) if npc_object else "You are a helpful assistant with access to tools."
             messages.insert(0, {'role': 'system', 'content': system_prompt})
-
         def stream_mcp_sse():
             nonlocal messages
             iteration = 0
@@ -5714,18 +4903,14 @@ def stream():
                 iteration += 1
                 print(f"[MCP] iteration {iteration} prompt len={len(prompt)}")
                 print(f"[MCP] tools_for_llm: {[t['function']['name'] for t in tools_for_llm]}")
-
                 agent_context = f'''The user's working directory is {current_path}
-
 IMPORTANT AGENT BEHAVIOR:
 - If a tool call fails or returns an error, DO NOT give up. Try alternative approaches.
 - If a file is not found, search for it using different paths or patterns.
 - If one method doesn't work, try another method to accomplish the task.
 - Keep working on the task until it is complete or you have exhausted all reasonable options.
 - When you encounter errors, explain what went wrong and what you're trying next.'''
-
                 print(f"[MCP DEBUG] Messages for LLM (iteration {iteration}): {json.dumps(messages, indent=2, default=str)[:3000]}")
-
                 llm_response = get_llm_response_with_handling(
                     prompt=prompt,
                     npc=npc_object,
@@ -5740,7 +4925,6 @@ IMPORTANT AGENT BEHAVIOR:
                     **thinking_kwargs,
                 )
                 print('RESPONSE', llm_response)
-
                 stream = llm_response.get("response", [])
                 usage = llm_response.get("usage", {})
                 total_input_tokens += usage.get("input_tokens", 0) or 0
@@ -5748,7 +4932,6 @@ IMPORTANT AGENT BEHAVIOR:
                 collected_content = ""
                 collected_tool_calls = []
                 agent_tool_call_data = {"id": None, "function_name": None, "arguments": ""}
-
                 last_response_chunk = None
                 for response_chunk in stream:
                     last_response_chunk = response_chunk
@@ -5756,7 +4939,6 @@ IMPORTANT AGENT BEHAVIOR:
                         if cancellation_flags.get(stream_id, False):
                             yield {"type": "interrupt"}
                             return
-
                     if "hf.co" in model or provider == 'ollama':
                         msg = getattr(response_chunk, "message", None) or (response_chunk.get("message", {}) if hasattr(response_chunk, "get") else {})
                         chunk_content = getattr(msg, "content", None) or (msg.get("content") if hasattr(msg, "get") else "") or ""
@@ -5786,7 +4968,6 @@ IMPORTANT AGENT BEHAVIOR:
                         model_name = getattr(response_chunk, "model", None) or (response_chunk.get("model") if hasattr(response_chunk, "get") else model)
                         msg_role = getattr(msg, "role", None) or (msg.get("role") if hasattr(msg, "get") else "assistant")
                         done_reason = getattr(response_chunk, "done_reason", None) or (response_chunk.get("done_reason") if hasattr(response_chunk, "get") else None)
-
                         chunk_data = {
                             "id": None,
                             "object": None,
@@ -5805,7 +4986,6 @@ IMPORTANT AGENT BEHAVIOR:
                             ]
                         }
                         yield chunk_data
-
                     elif hasattr(response_chunk, "choices") and response_chunk.choices:
                         delta = response_chunk.choices[0].delta
                         if hasattr(delta, "content") and delta.content:
@@ -5827,7 +5007,6 @@ IMPORTANT AGENT BEHAVIOR:
                                 ]
                             }
                             yield chunk_data
-
                         if hasattr(delta, "tool_calls") and delta.tool_calls:
                             for tool_call_delta in delta.tool_calls:
                                 idx = getattr(tool_call_delta, "index", 0)
@@ -5845,7 +5024,6 @@ IMPORTANT AGENT BEHAVIOR:
                                         collected_tool_calls[idx]["function"]["name"] = fn.name
                                     if getattr(fn, "arguments", None):
                                         collected_tool_calls[idx]["function"]["arguments"] += fn.arguments
-
                 if not collected_tool_calls:
                     print("[MCP] no tool calls, finishing streaming loop")
                     if last_response_chunk is not None:
@@ -5864,9 +5042,7 @@ IMPORTANT AGENT BEHAVIOR:
                         if eval_count:
                             total_output_tokens += eval_count
                     break
-
                 print(f"[MCP] collected tool calls: {[tc['function']['name'] for tc in collected_tool_calls]}")
-
                 serialized_tool_calls = []
                 for tc in collected_tool_calls:
                     parsed_args = tc["function"]["arguments"]
@@ -5882,13 +5058,11 @@ IMPORTANT AGENT BEHAVIOR:
                             "arguments": args_for_message
                         }
                     })
-
                 messages.append({
                     "role": "assistant",
                     "content": collected_content,
                     "tool_calls": serialized_tool_calls
                 })
-
                 yield {
                     "type": "tool_execution_start",
                     "tool_calls": [
@@ -5902,7 +5076,6 @@ IMPORTANT AGENT BEHAVIOR:
                         } for tc in collected_tool_calls
                     ]
                 }
-
                 tool_results = []
                 session_grants = {}
                 for tc in collected_tool_calls:
@@ -5910,28 +5083,23 @@ IMPORTANT AGENT BEHAVIOR:
                         if cancellation_flags.get(stream_id, False):
                             yield {"type": "interrupt"}
                             return
-
                     tool_name = tc["function"]["name"]
                     tool_args = tc["function"]["arguments"]
                     tool_id = tc["id"]
-
                     if isinstance(tool_args, str):
                         try:
                             tool_args = json.loads(tool_args) if tool_args.strip() else {}
                         except json.JSONDecodeError:
                             tool_args = {}
-
                     executor = tool_executors.get(tool_name)
                     cmd_key = _build_command_key(tool_name, tool_args)
                     perm = _check_tool_permission(tool_name, tool_args, executor, session_grants, team_object)
-
                     if perm == "deny":
                         tool_content = f"EPERM: Tool '{tool_name}' is denied by permission settings."
                         messages.append({"role": "tool", "tool_call_id": tool_id, "name": tool_name, "content": tool_content})
                         tool_results.append({"name": tool_name, "tool_call_id": tool_id, "content": tool_content})
                         yield {"type": "tool_error", "name": tool_name, "id": tool_id, "error": tool_content}
                         continue
-
                     if perm == "ask":
                         request_id = f"perm_{stream_id}_{tool_id}_{uuid.uuid4().hex[:8]}"
                         preview = json.dumps(tool_args, default=str)
@@ -5954,7 +5122,6 @@ IMPORTANT AGENT BEHAVIOR:
                             tool_results.append({"name": tool_name, "tool_call_id": tool_id, "content": tool_content})
                             yield {"type": "tool_error", "name": tool_name, "id": tool_id, "error": tool_content}
                             continue
-
                     print(f"[MCP] tool_start {tool_name} args={tool_args}")
                     yield {"type": "tool_start", "name": tool_name, "id": tool_id, "args": tool_args}
                     try:
@@ -5995,7 +5162,6 @@ IMPORTANT AGENT BEHAVIOR:
                                     tool_content = f"Python tool error: {str(py_e)}"
                         else:
                             tool_content = f"Tool '{tool_name}' not found in resolved tools"
-                        
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_id,
@@ -6007,10 +5173,8 @@ IMPORTANT AGENT BEHAVIOR:
                             "tool_call_id": tool_id,
                             "content": tool_content
                         })
-
                         print(f"[MCP] tool_result {tool_name}: {tool_content}")
                         yield {"type": "tool_result", "name": tool_name, "id": tool_id, "result": tool_content}
-
                     except Exception as e:
                         error_msg = f"Tool execution error: {str(e)}"
                         print(f"[MCP] tool_error {tool_name}: {error_msg}")
@@ -6026,20 +5190,16 @@ IMPORTANT AGENT BEHAVIOR:
                             "content": error_msg
                         })
                         yield {"type": "tool_error", "name": tool_name, "id": tool_id, "error": error_msg}
-
                 tool_results_for_db = tool_results
                 prompt = ""
-
             app.mcp_clients[state_key]["messages"] = messages
             mcp_cost = calculate_cost(model, total_input_tokens, total_output_tokens) if total_input_tokens or total_output_tokens else 0
             if total_input_tokens or total_output_tokens:
                 yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "cost": mcp_cost or 0}
             return
         stream_response = stream_mcp_sse()
-
     else:
         stream_response = {"output": f"Unsupported execution mode: {exe_mode}", "messages": messages}
-
     user_message_filled = ''
     if len(messages) >0:
       if isinstance(messages[-1] .get('content'), list):
@@ -6047,7 +5207,6 @@ IMPORTANT AGENT BEHAVIOR:
               txt = cont.get('text')
               if txt is not None:
                   user_message_filled += txt
-    
     def event_stream(current_stream_id):
         complete_response = []
         complete_reasoning = []
@@ -6057,7 +5216,6 @@ IMPORTANT AGENT BEHAVIOR:
         tool_call_data = {"id": None, "function_name": None, "arguments": ""}
         total_input_tokens = 0
         total_output_tokens = 0
-
         try:
             if hasattr(stream_response, "__iter__") and not isinstance(stream_response, (dict, str)):
                 for chunk in stream_response:
@@ -6107,7 +5265,6 @@ IMPORTANT AGENT BEHAVIOR:
                             total_output_tokens += chunk.get("output_tokens", 0) or 0
                         continue
                     yield f"data: {json.dumps({'choices':[{'delta':{'content': str(chunk), 'role': 'assistant'},'finish_reason':None}]})}\n\n"
-
             elif isinstance(stream_response, str) :
                 print('stream a str and not a gen')
                 chunk_data = {
@@ -6128,7 +5285,6 @@ IMPORTANT AGENT BEHAVIOR:
                         ]
                     }
                 yield f"data: {json.dumps(chunk_data)}\n\n"
-
             elif isinstance(stream_response, dict) and 'output' in stream_response and isinstance(stream_response.get('output'), str):
                 print('stream a str and not a gen')
                 chunk_data = {
@@ -6149,7 +5305,6 @@ IMPORTANT AGENT BEHAVIOR:
                         ]
                     }
                 yield f"data: {json.dumps(chunk_data)}\n\n"
-
             elif isinstance(stream_response, dict):
                 if provider == 'lora':
                     lora_text = stream_response.get('response', stream_response.get('output', ''))
@@ -6185,7 +5340,6 @@ IMPORTANT AGENT BEHAVIOR:
                             print(f"Cancellation flag triggered for {current_stream_id}. Breaking loop.")
                             interrupted = True
                             break
-
                     print('.', end="", flush=True)
                     dot_count += 1
                     if provider == 'llamacpp':
@@ -6280,7 +5434,6 @@ IMPORTANT AGENT BEHAVIOR:
                             "choices": [{"index": choice.index, "delta": {"content": choice.delta.content, "role": choice.delta.role, "reasoning_content": reasoning_content if hasattr(choice.delta, "reasoning_content") else None}, "finish_reason": choice.finish_reason} for choice in response_chunk.choices]
                         }
                         yield f"data: {json.dumps(chunk_data)}\n\n"
-
                     chunk_usage = getattr(response_chunk, 'usage', None)
                     if chunk_usage is None and isinstance(response_chunk, dict):
                         chunk_usage = response_chunk.get('usage')
@@ -6295,7 +5448,6 @@ IMPORTANT AGENT BEHAVIOR:
                         total_input_tokens = prompt_eval
                     if eval_count:
                         total_output_tokens = eval_count
-
                   if last_response_chunk is not None:
                       final_usage = getattr(last_response_chunk, 'usage', None)
                       if final_usage is None and isinstance(last_response_chunk, dict):
@@ -6311,22 +5463,17 @@ IMPORTANT AGENT BEHAVIOR:
                           total_input_tokens = final_prompt_eval
                       if final_eval_count:
                           total_output_tokens = final_eval_count
-
         except Exception as e:
             print(f"\nAn exception occurred during streaming for {current_stream_id}: {e}")
             traceback.print_exc()
             interrupted = True
-
         finally:
             print(f"\nStream {current_stream_id} finished. Interrupted: {interrupted}")
             print('\r' + ' ' * dot_count*2 + '\r', end="", flush=True)
-
             final_response_text = ''.join(complete_response)
-
             if total_input_tokens or total_output_tokens:
                 stream_cost = calculate_cost(model, total_input_tokens, total_output_tokens) if total_input_tokens or total_output_tokens else 0
                 yield f"data: {json.dumps({'type': 'usage', 'input_tokens': total_input_tokens, 'output_tokens': total_output_tokens, 'cost': stream_cost or 0})}\n\n"
-
             yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
             _cleanup_stream(current_stream_id, getattr(app, '_last_mcp_state_key', None))
     return Response(event_stream(stream_id), mimetype="text/event-stream", headers={
@@ -6334,7 +5481,6 @@ IMPORTANT AGENT BEHAVIOR:
         'Connection': 'keep-alive',
         'X-Accel-Buffering': 'no'
     })
-
 @app.route("/api/memory/approve", methods=["POST"])
 def approve_memories():
     """Approve or reject memories in the local .knowledge.yaml."""
@@ -6342,22 +5488,17 @@ def approve_memories():
         data = request.json
         approvals = data.get("approvals", [])
         directory_path = data.get("currentPath", os.getcwd())
-
         from npcpy.memory.knowledge_store import get_store_for_path
         store = get_store_for_path(directory_path)
-
         for approval in approvals:
             store.update_memory(
                 mem_id=str(approval['memory_id']),
                 status=approval['decision'],
                 final_memory=approval.get('final_memory'),
             )
-
         return jsonify({"success": True, "processed": len(approvals)})
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/memory/search", methods=["GET"])
 def search_memories():
     """Search memories in the local .knowledge.yaml."""
@@ -6368,10 +5509,8 @@ def search_memories():
         directory_path = request.args.get("directory_path", os.getcwd())
         status = request.args.get("status")
         limit = int(request.args.get("limit", 50))
-
         if not q:
             return jsonify({"error": "Query parameter 'q' is required"}), 400
-
         from npcpy.memory.knowledge_store import KnowledgeStore
         store = KnowledgeStore(directory_path)
         results = store.search_memories(q, limit=limit)
@@ -6387,11 +5526,9 @@ def search_memories():
                 filtered.append(mem)
             results = filtered
         return jsonify({"memories": results, "count": len(results)})
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/memory/pending", methods=["GET"])
 def get_pending_memories():
     """Get memories awaiting approval from the local .knowledge.yaml."""
@@ -6400,7 +5537,6 @@ def get_pending_memories():
         npc = request.args.get("npc")
         team = request.args.get("team")
         directory_path = request.args.get("directory_path", os.getcwd())
-
         from npcpy.memory.knowledge_store import KnowledgeStore
         store = KnowledgeStore(directory_path)
         results = store.get_memories(status="pending_approval", limit=limit)
@@ -6414,11 +5550,9 @@ def get_pending_memories():
                 filtered.append(mem)
             results = filtered
         return jsonify({"memories": results, "count": len(results)})
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/memory/scope", methods=["GET"])
 def get_memories_by_scope():
     """Get memories for a specific scope from the local .knowledge.yaml."""
@@ -6427,7 +5561,6 @@ def get_memories_by_scope():
         team = request.args.get("team", "")
         directory_path = request.args.get("directory_path", os.getcwd())
         status = request.args.get("status")
-
         from npcpy.memory.knowledge_store import KnowledgeStore
         store = KnowledgeStore(directory_path)
         results = store.get_memories(status=status)
@@ -6439,11 +5572,9 @@ def get_memories_by_scope():
                 continue
             filtered.append(mem)
         return jsonify({"memories": filtered, "count": len(filtered)})
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
 @app.route("/api/knowledge/extract", methods=["POST"])
 def extract_facts_preview():
     """Extract facts from arbitrary conversation text without storing. Returns facts for review."""
@@ -6456,10 +5587,8 @@ def extract_facts_preview():
         npc_name = data.get("npc", "")
         team_name = data.get("team", "")
         current_path = data.get("currentPath", "")
-
         if not conversation_text:
             return jsonify({"facts": [], "error": "No conversation_text provided"}), 400
-
         npc_object = None
         if npc_name and current_path:
             try:
@@ -6468,7 +5597,6 @@ def extract_facts_preview():
                 npc_object = npcs.get(npc_name)
             except Exception:
                 pass
-
         from npcpy.llm_funcs import get_facts, resolve_model_provider
         resolved_model, resolved_provider, _, _ = resolve_model_provider(
             npc=npc_object,
@@ -6476,7 +5604,6 @@ def extract_facts_preview():
             model=model,
             provider=provider,
         )
-
         memory_context = ""
         if current_path:
             try:
@@ -6485,7 +5612,6 @@ def extract_facts_preview():
                 memory_context = store.build_context(max_memories=10)
             except Exception:
                 pass
-
         from npcpy.llm_funcs import CONVERSATION_RULES
         facts = get_facts(
             conversation_text,
@@ -6495,19 +5621,15 @@ def extract_facts_preview():
             context=memory_context,
             rules=CONVERSATION_RULES,
         )
-
         return jsonify({
             "facts": facts or [],
             "count": len(facts) if facts else 0,
             "model": resolved_model,
             "provider": resolved_provider,
         })
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/knowledge/extract-and-store", methods=["POST"])
 def extract_and_store_facts():
     """Extract facts from conversation text and store as pending memories."""
@@ -6520,10 +5642,8 @@ def extract_and_store_facts():
         npc_name = data.get("npc", "")
         team_name = data.get("team", "")
         current_path = data.get("currentPath", "")
-
         if not conversation_text:
             return jsonify({"facts": [], "error": "No conversation_text provided"}), 400
-
         npc_object = None
         if npc_name and current_path:
             try:
@@ -6532,7 +5652,6 @@ def extract_and_store_facts():
                 npc_object = npcs.get(npc_name)
             except Exception:
                 pass
-
         memories = extract_and_store_memories(
             conversation_text=conversation_text,
             conversation_id=conversation_id,
@@ -6543,37 +5662,27 @@ def extract_and_store_facts():
             provider=provider,
             npc_object=npc_object,
         )
-
         return jsonify({
             "memories": memories or [],
             "count": len(memories) if memories else 0,
         })
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/interrupt", methods=["POST"])
 def interrupt_stream():
     data = request.json
     stream_id_to_cancel = data.get("streamId")
-
     if not stream_id_to_cancel:
         return jsonify({"error": "streamId is required"}), 400
-
     with cancellation_lock:
         print(f"Received interruption request for stream ID: {stream_id_to_cancel}")
         cancellation_flags[stream_id_to_cancel] = True
-
     mcp_state_key = getattr(app, '_last_mcp_state_key', None)
     if mcp_state_key and hasattr(app, 'mcp_clients') and mcp_state_key in app.mcp_clients:
         print(f"[INTERRUPT] Removing MCP state for {mcp_state_key}")
         del app.mcp_clients[mcp_state_key]
-
     return jsonify({"success": True, "message": f"Interruption for stream {stream_id_to_cancel} registered."})
-
-
 def _build_command_key(tool_name: str, arguments: dict) -> str:
     """Build a hierarchical command key for permission matching."""
     cmd_key = tool_name
@@ -6590,8 +5699,6 @@ def _build_command_key(tool_name: str, arguments: dict) -> str:
     elif tool_name == "delegate" and arguments.get("target"):
         cmd_key = f"delegate:{arguments['target']}"
     return cmd_key
-
-
 def _match_permission(cmd_key: str, rules: dict) -> Optional[str]:
     """Find the most specific matching permission rule."""
     if cmd_key in rules:
@@ -6605,8 +5712,6 @@ def _match_permission(cmd_key: str, rules: dict) -> Optional[str]:
                 best_len = len(rule_key)
                 best_match = rules[rule_key]
     return best_match
-
-
 def _load_permission_file(path: str) -> dict:
     if not os.path.exists(path):
         return {}
@@ -6617,8 +5722,6 @@ def _load_permission_file(path: str) -> dict:
         return {k: str(v) for k, v in rules.items()}
     except Exception:
         return {}
-
-
 def _permission_rules_for_team(team_object):
     rules = _load_permission_file(os.path.expanduser("~/.npcsh/npc_team/permissions.yaml"))
     if team_object and getattr(team_object, "team_path", None):
@@ -6628,41 +5731,31 @@ def _permission_rules_for_team(team_object):
             if os.path.exists(workspace_path):
                 rules.update(_load_permission_file(workspace_path))
     return rules
-
-
 def _check_tool_permission(tool_name, arguments, executor, session_grants, team_object):
     """Return 'allow', 'deny', or 'ask' for a tool call."""
     cmd_key = _build_command_key(tool_name, arguments)
-
     # Session grants first.
     session_decision = _match_permission(cmd_key, session_grants)
     if session_decision:
         return session_decision if session_decision != "session" else "allow"
-
     # Jinx own metadata.
     if executor and executor.get("type") == "jinx" and executor.get("jinx"):
         jinx_perm = executor["jinx"].check_permission()
         if jinx_perm != "ask":
             return jinx_perm
-
     # Workspace/global rules.
     rules = _permission_rules_for_team(team_object)
     rule = _match_permission(cmd_key, rules)
     if rule:
         return "allow" if rule == "auto" else rule
-
     # Safe defaults.
     if tool_name in ("chat", "help", "stop"):
         return "allow"
-
     return "ask"
-
-
 def _apply_permission_decision(decision, tool_name, arguments, executor, session_grants, team_object):
     """Apply user's decision and persist if always/never. Returns True if allowed."""
     cmd_key = _build_command_key(tool_name, arguments)
     allowed = str(decision).startswith("Yes")
-
     if "session" in decision.lower():
         session_grants[cmd_key] = "session"
     elif "always" in decision.lower():
@@ -6676,10 +5769,7 @@ def _apply_permission_decision(decision, tool_name, arguments, executor, session
             executor["jinx"].set_permission("deny")
         else:
             _save_permission(cmd_key, "deny", team_object)
-
     return allowed
-
-
 def _save_permission(key: str, level: str, team_object):
     team_dir = getattr(team_object, "team_path", None)
     if team_dir:
@@ -6693,8 +5783,6 @@ def _save_permission(key: str, level: str, team_object):
     existing[key] = level
     with open(perm_path, "w") as f:
         yaml.dump({"rules": existing}, f, default_flow_style=False)
-
-
 def _wait_for_permission_response(request_id, timeout=120):
     event = threading.Event()
     with permission_lock:
@@ -6705,8 +5793,6 @@ def _wait_for_permission_response(request_id, timeout=120):
     if not ready or not entry:
         return None
     return entry.get("decision")
-
-
 @app.route("/api/permission_response", methods=["POST"])
 def permission_response():
     data = request.json or {}
@@ -6721,15 +5807,12 @@ def permission_response():
         entry["decision"] = decision
         entry["event"].set()
     return jsonify({"success": True})
-
-
 @app.after_request
 def after_request(response):
     response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
     response.headers.add("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS")
     response.headers.add("Access-Control-Allow-Credentials", "true")
     return response
-
 @app.route("/api/ollama/tool_models", methods=["GET"])
 def get_ollama_tool_models():
     """
@@ -6747,7 +5830,6 @@ def get_ollama_tool_models():
     except Exception as e:
         print(f"Error listing Ollama models: {e}")
         return jsonify({"models": [], "error": str(e)}), 500
-
 extension_map = {
     "PNG": "images",
     "JPG": "images",
@@ -6777,19 +5859,14 @@ extension_map = {
     "BZ2": "archives",
     "ISO": "archives",
 }
-
-    
-
 @app.route("/api/health", methods=["GET"])
 def health_check():
     return jsonify({"status": "ok", "error": None})
-
 @app.route("/v1/chat/completions", methods=["POST"])
 def openai_chat_completions():
     """
     OpenAI-compatible chat completions endpoint.
     Allows using NPC team as a drop-in replacement for OpenAI API.
-
     Extra parameter:
       - agent: NPC name to use (optional, uses team's forenpc if not specified)
     """
@@ -6800,18 +5877,13 @@ def openai_chat_completions():
         stream = data.get("stream", False)
         temperature = data.get("temperature", 0.7)
         max_tokens = data.get("max_tokens", 4096)
-
         agent_name = data.get("agent") or data.get("npc")
-
         current_path = request.headers.get("X-Current-Path", os.getcwd())
         registered_teams = data.get("registered_teams", [])
-
         npc = None
         team = None
-
         project_team_path = os.path.join(current_path, "npc_team")
         search_paths = [project_team_path] + [p for p in registered_teams if p and os.path.isdir(p)]
-
         for team_path in search_paths:
             if os.path.exists(team_path):
                 try:
@@ -6825,7 +5897,6 @@ def openai_chat_completions():
                 except Exception as e:
                     print(f"Error loading team {team_path}: {e}")
                     continue
-
         if not npc and agent_name:
             for team_path in search_paths:
                 npc_file = os.path.join(team_path, f"{agent_name}.npc")
@@ -6835,7 +5906,6 @@ def openai_chat_completions():
                         break
                     except Exception as e:
                         print(f"Error loading NPC {npc_file}: {e}")
-
         prompt = ""
         conversation_messages = []
         for msg in messages:
@@ -6846,7 +5916,6 @@ def openai_chat_completions():
             conversation_messages.append({"role": role, "content": content})
             if role == "user":
                 prompt = content
-
         provider = data.get("provider")
         if not provider:
             if "gpt" in model or "o1" in model or model.startswith("o3"):
@@ -6857,12 +5926,10 @@ def openai_chat_completions():
                 provider = "gemini"
             else:
                 provider = "openai"
-
         if stream:
             def generate_stream():
                 request_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
                 created = int(time.time())
-
                 try:
                     response = get_llm_response(
                         prompt,
@@ -6875,7 +5942,6 @@ def openai_chat_completions():
                         temperature=temperature,
                         max_tokens=max_tokens,
                     )
-
                     for chunk in response:
                         if isinstance(chunk, str):
                             delta_content = chunk
@@ -6884,7 +5950,6 @@ def openai_chat_completions():
                             delta_content = getattr(delta, 'content', '') or ''
                         else:
                             delta_content = str(chunk)
-
                         if delta_content:
                             chunk_data = {
                                 "id": request_id,
@@ -6898,7 +5963,6 @@ def openai_chat_completions():
                                 }]
                             }
                             yield f"data: {json.dumps(chunk_data)}\n\n"
-
                     final_chunk = {
                         "id": request_id,
                         "object": "chat.completion.chunk",
@@ -6912,7 +5976,6 @@ def openai_chat_completions():
                     }
                     yield f"data: {json.dumps(final_chunk)}\n\n"
                     yield "data: [DONE]\n\n"
-
                 except Exception as e:
                     error_chunk = {
                         "error": {
@@ -6921,7 +5984,6 @@ def openai_chat_completions():
                         }
                     }
                     yield f"data: {json.dumps(error_chunk)}\n\n"
-
             return Response(
                 generate_stream(),
                 mimetype='text/event-stream',
@@ -6943,7 +6005,6 @@ def openai_chat_completions():
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-
             content = ""
             if isinstance(response, str):
                 content = response
@@ -6953,7 +6014,6 @@ def openai_chat_completions():
                 content = response.get("response") or response.get("output") or str(response)
             else:
                 content = str(response)
-
             return jsonify({
                 "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
                 "object": "chat.completion",
@@ -6973,7 +6033,6 @@ def openai_chat_completions():
                     "total_tokens": -1
                 }
             })
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({
@@ -6983,17 +6042,13 @@ def openai_chat_completions():
                 "code": 500
             }
         }), 500
-
 @app.route("/v1/models", methods=["GET"])
 def openai_list_models():
     """OpenAI-compatible models listing - returns available NPCs as models."""
     current_path = request.headers.get("X-Current-Path", os.getcwd())
     registered_teams = _parse_registered_teams()
-
     models = []
-
     search_paths = [os.path.join(current_path, "npc_team")] + [p for p in registered_teams if p and os.path.isdir(p)]
-
     for team_path in search_paths:
         if os.path.exists(team_path):
             for npc_file in Path(team_path).glob("*.npc"):
@@ -7003,17 +6058,14 @@ def openai_list_models():
                     "created": int(os.path.getmtime(npc_file)),
                     "owned_by": "npc-team"
                 })
-
     return jsonify({
         "object": "list",
         "data": models
     })
-
 @app.route('/api/models/gguf/scan', methods=['GET'])
 def scan_gguf_models():
     """Scan for GGUF/GGML model files in specified or default directories."""
     directory = request.args.get('directory')
-
     models_dir = get_models_dir()
     default_dirs = [
         os.path.join(models_dir, 'gguf'),
@@ -7021,20 +6073,15 @@ def scan_gguf_models():
         os.path.expanduser('~/models'),
         os.path.expanduser('~/.cache/huggingface/hub'),
     ]
-
     cfg_dir = app.config.get('GGUF_DIR')
     if cfg_dir:
         default_dirs.insert(0, os.path.expanduser(cfg_dir))
-
     dirs_to_scan = [os.path.expanduser(directory)] if directory else default_dirs
-
     models = []
     seen_paths = set()
-
     for scan_dir in dirs_to_scan:
         if not os.path.isdir(scan_dir):
             continue
-
         for root, dirs, files in os.walk(scan_dir):
             for f in files:
                 if f.endswith(('.gguf', '.ggml', '.bin')) and not f.startswith('.'):
@@ -7051,9 +6098,7 @@ def scan_gguf_models():
                             })
                         except OSError:
                             pass
-
     return jsonify({'models': models, 'error': None})
-
 @app.route('/api/models/hf/download', methods=['POST'])
 def download_hf_model():
     """Download a GGUF model from HuggingFace."""
@@ -7061,39 +6106,29 @@ def download_hf_model():
     url = data.get('url', '')
     default_target = os.path.join(get_models_dir(), 'gguf')
     target_dir = data.get('target_dir', default_target)
-
     target_dir = os.path.expanduser(target_dir)
     os.makedirs(target_dir, exist_ok=True)
-
     try:
-
         if url.startswith('http'):
             import requests
             filename = url.split('/')[-1].split('?')[0]
             target_path = os.path.join(target_dir, filename)
-
             print(f"Downloading {url} to {target_path}")
             response = requests.get(url, stream=True)
             response.raise_for_status()
-
             with open(target_path, 'wb') as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
-
             return jsonify({'path': target_path, 'error': None})
         else:
             try:
                 from huggingface_hub import hf_hub_download, list_repo_files
-
                 files = list_repo_files(url)
                 gguf_files = [f for f in files if f.endswith('.gguf')]
-
                 if not gguf_files:
                     return jsonify({'error': 'No GGUF files found in repository'}), 400
-
                 q4_files = [f for f in gguf_files if 'Q4' in f or 'q4' in f]
                 file_to_download = q4_files[0] if q4_files else gguf_files[0]
-
                 print(f"Downloading {file_to_download} from {url}")
                 path = hf_hub_download(
                     repo_id=url,
@@ -7101,15 +6136,12 @@ def download_hf_model():
                     local_dir=target_dir,
                     local_dir_use_symlinks=False
                 )
-
                 return jsonify({'path': path, 'error': None})
             except ImportError:
                 return jsonify({'error': 'huggingface_hub not installed. Run: pip install huggingface_hub'}), 500
-
     except Exception as e:
         print(f"Error downloading HF model: {e}")
         return jsonify({'error': str(e)}), 500
-
 @app.route('/api/models/hf/download_file', methods=['POST'])
 def download_hf_file():
     """Download a specific file from a HuggingFace repository."""
@@ -7118,16 +6150,12 @@ def download_hf_file():
     filename = data.get('filename', '')
     default_target = os.path.join(get_models_dir(), 'gguf')
     target_dir = data.get('target_dir', default_target)
-
     if not repo_id or not filename:
         return jsonify({'error': 'repo_id and filename are required'}), 400
-
     target_dir = os.path.expanduser(target_dir)
     os.makedirs(target_dir, exist_ok=True)
-
     try:
         from huggingface_hub import hf_hub_download
-
         print(f"Downloading {filename} from {repo_id} to {target_dir}")
         path = hf_hub_download(
             repo_id=repo_id,
@@ -7135,18 +6163,15 @@ def download_hf_file():
             local_dir=target_dir,
             local_dir_use_symlinks=False
         )
-
         return jsonify({'path': path, 'error': None})
     except ImportError:
         return jsonify({'error': 'huggingface_hub not installed. Run: pip install huggingface_hub'}), 500
     except Exception as e:
         print(f"Error downloading HF file: {e}")
         return jsonify({'error': str(e)}), 500
-
 @app.route('/api/generate_music', methods=['POST'])
 def generate_music_endpoint():
     """Generate music from a text prompt.
-
     JSON body: { prompt, provider, model?, duration?, api_key?, currentPath? }
     Providers: 'local' (MusicGen via transformers), 'replicate' (musicgen/stable-audio/riffusion),
     'elevenlabs' (sound-generation, <=22s).
@@ -7154,12 +6179,10 @@ def generate_music_endpoint():
     try:
         import base64 as _b64
         from npcpy.gen.audio_gen import generate_music
-
         data = request.json or {}
         prompt = data.get('prompt', '').strip()
         if not prompt:
             return jsonify({'success': False, 'error': 'prompt is required'}), 400
-
         provider = data.get('provider', 'replicate')
         model = data.get('model')
         duration = int(data.get('duration', 10))
@@ -7167,7 +6190,6 @@ def generate_music_endpoint():
         current_path = data.get('currentPath') or data.get('current_path')
         if not current_path:
             return jsonify({'success': False, 'error': 'currentPath is required'}), 400
-
         result = generate_music(
             prompt=prompt,
             provider=provider,
@@ -7175,7 +6197,6 @@ def generate_music_endpoint():
             duration=duration,
             api_key=api_key,
         )
-
         save_dir = os.path.abspath(os.path.expanduser(current_path))
         os.makedirs(save_dir, exist_ok=True)
         ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -7183,7 +6204,6 @@ def generate_music_endpoint():
         filepath = os.path.join(save_dir, filename)
         with open(filepath, 'wb') as f:
             f.write(result['audio'])
-
         return jsonify({
             'success': True,
             'filename': filepath,
@@ -7192,13 +6212,10 @@ def generate_music_endpoint():
             'model': result['model'],
             'audio': _b64.b64encode(result['audio']).decode('utf-8'),
         })
-
     except Exception as e:
         print(f"Music generation error: {e}")
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
-
-
 @app.route('/api/audio/tts', methods=['POST'])
 def text_to_speech_endpoint():
     """Convert text to speech and return audio file."""
@@ -7208,19 +6225,15 @@ def text_to_speech_endpoint():
             text_to_speech, get_available_engines,
             pcm16_to_wav
         )
-
         data = request.json or {}
         text = data.get('text', '')
         engine = data.get('engine', 'kokoro')
         voice = data.get('voice', 'af_heart')
-
         if not text:
             return jsonify({'success': False, 'error': 'No text provided'}), 400
-
         engines = get_available_engines()
         if engine not in engines:
             return jsonify({'success': False, 'error': f'Unknown engine: {engine}'}), 400
-
         if not engines[engine]['available']:
             if engines.get('kokoro', {}).get('available'):
                 engine = 'kokoro'
@@ -7232,9 +6245,7 @@ def text_to_speech_endpoint():
                     'success': False,
                     'error': f'{engine} not available. Install: {engines[engine].get("install", engines[engine].get("requires", ""))}'
                 }), 400
-
         audio_bytes = text_to_speech(text, engine=engine, voice=voice)
-
         if engine in ['kokoro']:
             audio_format = 'wav'
         elif engine in ['elevenlabs', 'gtts']:
@@ -7244,9 +6255,7 @@ def text_to_speech_endpoint():
             audio_format = 'wav'
         else:
             audio_format = 'wav'
-
         audio_data = base64.b64encode(audio_bytes).decode('utf-8')
-
         return jsonify({
             'success': True,
             'audio': audio_data,
@@ -7254,14 +6263,12 @@ def text_to_speech_endpoint():
             'engine': engine,
             'voice': voice
         })
-
     except ImportError as e:
         return jsonify({'success': False, 'error': f'TTS dependency not installed: {e}'}), 500
     except Exception as e:
         print(f"TTS error: {e}")
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
-
 @app.route('/api/audio/stt', methods=['POST'])
 def speech_to_text_endpoint():
     """Convert speech audio to text using various STT engines."""
@@ -7269,28 +6276,22 @@ def speech_to_text_endpoint():
         import tempfile
         import base64
         from npcpy.data.audio import speech_to_text, get_available_stt_engines
-
         data = request.json or {}
         audio_data = data.get('audio')
         audio_format = data.get('format', 'webm')
         language = data.get('language')
         engine = data.get('engine', 'whisper')
         model_size = data.get('model', 'base')
-
         if not audio_data:
             return jsonify({'success': False, 'error': 'No audio data provided'}), 400
-
         audio_bytes = base64.b64decode(audio_data)
-
         wav_bytes = audio_bytes
         if audio_format != 'wav':
             with tempfile.NamedTemporaryFile(suffix=f'.{audio_format}', delete=False) as f:
                 f.write(audio_bytes)
                 temp_path = f.name
-
             wav_path = temp_path.replace(f'.{audio_format}', '.wav')
             converted = False
-
             try:
                 subprocess.run([
                     'ffmpeg', '-y', '-i', temp_path,
@@ -7305,7 +6306,6 @@ def speech_to_text_endpoint():
                 pass
             except subprocess.CalledProcessError:
                 pass
-
             if not converted:
                 try:
                     from pydub import AudioSegment
@@ -7320,34 +6320,28 @@ def speech_to_text_endpoint():
                     pass
                 except Exception as e:
                     print(f"pydub conversion failed: {e}")
-
             os.unlink(temp_path)
-
             if not converted:
                 return jsonify({
                     'success': False,
                     'error': 'Audio conversion failed. Install ffmpeg: sudo apt-get install ffmpeg'
                 }), 500
-
         result = speech_to_text(
             wav_bytes,
             engine=engine,
             language=language,
             model_size=model_size
         )
-
         return jsonify({
             'success': True,
             'text': result.get('text', ''),
             'language': result.get('language', language or 'en'),
             'segments': result.get('segments', [])
         })
-
     except Exception as e:
         print(f"STT error: {e}")
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
-
 @app.route('/api/audio/stt/engines', methods=['GET'])
 def get_stt_engines_endpoint():
     """Get available STT engines."""
@@ -7358,16 +6352,13 @@ def get_stt_engines_endpoint():
     except Exception as e:
         print(f"Error getting STT engines: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
-
 @app.route('/api/audio/voices', methods=['GET'])
 def get_available_voices_endpoint():
     """Get available TTS voices/engines."""
     try:
         from npcpy.gen.audio_gen import get_available_engines, get_available_voices
-
         engines_info = get_available_engines()
         result = {}
-
         for engine_id, info in engines_info.items():
             voices = get_available_voices(engine_id) if info['available'] else []
             result[engine_id] = {
@@ -7383,14 +6374,11 @@ def get_available_voices_endpoint():
                     result[engine_id]['install'] = info['install']
                 if 'requires' in info:
                     result[engine_id]['requires'] = info['requires']
-
         return jsonify({'success': True, 'engines': result})
-
     except Exception as e:
         print(f"Error getting voices: {e}")
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
-
 @app.route('/api/activity/track', methods=['POST'])
 def track_activity():
     """Track user activity for predictive features."""
@@ -7401,7 +6389,6 @@ def track_activity():
     except Exception as e:
         print(f"Error tracking activity: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
-
 def start_flask_server(
     port=5337,
     host="0.0.0.0",
@@ -7456,7 +6443,6 @@ def start_flask_server(
     except Exception as e:
         print(f"Error starting server: {str(e)}")
         raise
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generic npcpy API server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind the server on")
@@ -7471,13 +6457,11 @@ if __name__ == "__main__":
     parser.add_argument("--team", action="append", dest="teams", default=None, help="Path to a team directory to register (can be given multiple times)")
     parser.add_argument("--teams-yaml", default=None, help="Path to a YAML file mapping team names to team directory paths")
     args = parser.parse_args()
-
     base_dir = os.path.expanduser("~/.npcpy")
     db_path = args.db_path or os.path.join(base_dir, "history.db")
     npc_dir = os.path.abspath(os.path.expanduser(args.dir))
     data_dir = args.data_dir or os.path.join(base_dir, "data")
     kg_registry = args.kg_registry
-
     try:
         db_dir = os.path.dirname(db_path)
         if db_dir:
@@ -7487,7 +6471,6 @@ if __name__ == "__main__":
         os.makedirs(data_dir, exist_ok=True)
     except Exception as dir_err:
         print(f"[SERVE] Warning: Could not create directories: {dir_err}")
-
     teams = {}
     if args.teams_yaml:
         teams_yaml_path = os.path.abspath(os.path.expanduser(args.teams_yaml))
@@ -7515,7 +6498,6 @@ if __name__ == "__main__":
             if os.path.isdir(team_path):
                 team_name = os.path.basename(team_path)
                 teams[team_name] = team_path
-
     try:
         start_flask_server(
             host=args.host,
@@ -7540,7 +6522,6 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
-
 @app.errorhandler(Exception)
 def handle_global_exception(e):
     """Handle all unhandled exceptions and return JSON instead of HTML."""
@@ -7551,7 +6532,6 @@ def handle_global_exception(e):
         'error': str(e),
         'error_type': type(e).__name__
     }), 500
-
 @app.errorhandler(404)
 def handle_404(e):
     """Handle 404 errors and return JSON instead of HTML."""
@@ -7560,7 +6540,6 @@ def handle_404(e):
         'error': 'Endpoint not found',
         'path': request.path
     }), 404
-
 @app.errorhandler(500)
 def handle_500(e):
     """Handle 500 errors and return JSON instead of HTML."""
