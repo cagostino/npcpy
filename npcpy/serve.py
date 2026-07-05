@@ -4886,13 +4886,14 @@ def stream():
         app._last_mcp_state_key = state_key
         if state_key not in app.mcp_clients:
             app.mcp_clients[state_key] = {"client": None, "server_path": None, "messages": messages}
-        messages = app.mcp_clients[state_key].get("messages", messages)
-        messages = clean_messages_for_llm(messages)
-        if not messages:
-            messages = []
-        if not any(m.get('role') == 'system' for m in messages):
+        app.mcp_clients[state_key].setdefault("messages", messages)
+        request_messages = clean_messages_for_llm(messages)
+        if not request_messages:
+            request_messages = []
+        if not any(m.get('role') == 'system' for m in request_messages):
             system_prompt = npc_object.get_system_prompt(tool_capable=True) if npc_object else "You are a helpful assistant with access to tools."
-            messages.insert(0, {'role': 'system', 'content': system_prompt})
+            request_messages.insert(0, {'role': 'system', 'content': system_prompt})
+        messages = request_messages
         def stream_mcp_sse():
             nonlocal messages
             iteration = 0
@@ -4911,8 +4912,9 @@ IMPORTANT AGENT BEHAVIOR:
 - Keep working on the task until it is complete or you have exhausted all reasonable options.
 - When you encounter errors, explain what went wrong and what you're trying next.'''
                 print(f"[MCP DEBUG] Messages for LLM (iteration {iteration}): {json.dumps(messages, indent=2, default=str)[:3000]}")
+                call_prompt = prompt if iteration == 1 else ""
                 llm_response = get_llm_response_with_handling(
-                    prompt=prompt,
+                    prompt=call_prompt,
                     npc=npc_object,
                     model=model,
                     provider=provider,
