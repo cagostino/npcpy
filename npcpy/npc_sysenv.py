@@ -190,7 +190,7 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
                 logging.info(f"{provider.capitalize()} models not indexed: {e}")
     try:
         import ollama
-        timeout_seconds = 0.5 
+        timeout_seconds = 5.0
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ollama_executor:
             def fetch_ollama_models():
                 return ollama.list()
