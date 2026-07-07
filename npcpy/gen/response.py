@@ -4,12 +4,19 @@ from npcpy.data.image import compress_image
 from npcpy.npc_sysenv import get_system_message, lookup_provider, render_markdown
 import base64
 import json
-import yaml
-import uuid
 import os
+import uuid
+import yaml
 import logging
 
 logger = logging.getLogger(__name__)
+
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+except ImportError:
+    torch = nn = F = None
 
 try:
     import ollama
@@ -1225,6 +1232,887 @@ Do not include any additional markdown formatting or leading ```json tags in you
 
     return result
 
+
+# ── QLLM-PAM local provider (self-contained) ──────────────────────────────────
+
+_QLLM_IM_START = "<|im_start|>"
+_QLLM_IM_END = "<|im_end|>"
+_QLLM_THINK_START = " " + "<think>"
+_QLLM_THINK_END = " " + "</think>"
+
+
+def _download_qllm_from_hf(repo_id: str) -> str:
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        raise ImportError(
+            "huggingface_hub is required to download QLLM-PAM models by repo id. "
+            "Install it with: pip install huggingface_hub"
+        )
+    return snapshot_download(repo_id, repo_type="model")
+
+
+def _resolve_qllm_checkpoint(model: str) -> tuple:
+    # Hugging Face repo id (e.g. owner/name)
+    if "/" in model and not os.path.exists(model):
+        model_dir = _download_qllm_from_hf(model)
+        pt_files = sorted(f for f in os.listdir(model_dir) if f.endswith(".pt"))
+        if not pt_files:
+            raise ValueError(f"No .pt checkpoint found in HF repo: {model}")
+        chat_files = [f for f in pt_files if "chat" in f.lower()]
+        checkpoint_file = chat_files[0] if chat_files else pt_files[0]
+        return os.path.join(model_dir, checkpoint_file), model_dir
+
+    if os.path.isfile(model):
+        if not model.endswith(".pt"):
+            raise ValueError(f"QLLM model file must be a .pt checkpoint: {model}")
+        checkpoint_path = os.path.abspath(model)
+        return checkpoint_path, os.path.dirname(checkpoint_path)
+
+    if os.path.isdir(model):
+        model_dir = os.path.abspath(model)
+        pt_files = sorted(f for f in os.listdir(model_dir) if f.endswith(".pt"))
+        if not pt_files:
+            raise ValueError(f"No .pt checkpoint found in QLLM model directory: {model}")
+        chat_files = [f for f in pt_files if "chat" in f.lower()]
+        checkpoint_file = chat_files[0] if chat_files else pt_files[0]
+        return os.path.join(model_dir, checkpoint_file), model_dir
+
+    raise ValueError(
+        f"QLLM model must be a HF repo id, a directory containing a .pt checkpoint, or a .pt file: {model}"
+    )
+
+
+def _get_qllm_device(device_pref: str = None):
+    import torch
+    if device_pref:
+        return torch.device(device_pref)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+# ── Self-contained QLLM-PAM V11 model ──────────────────────────────────────────
+
+class _QllmConfig:
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+def _qllm_cmul(a, b):
+    return torch.stack([
+        a[..., 0] * b[..., 0] - a[..., 1] * b[..., 1],
+        a[..., 0] * b[..., 1] + a[..., 1] * b[..., 0],
+    ], dim=-1)
+
+
+def _qllm_cconj(x):
+    return torch.stack([x[..., 0], -x[..., 1]], dim=-1)
+
+
+def _qllm_cabs(x):
+    return torch.sqrt(x[..., 0].square() + x[..., 1].square() + 1e-8)
+
+
+def _qllm_cnormalize(x):
+    return x / _qllm_cabs(x).unsqueeze(-1)
+
+
+def _qllm_to_real_concat(x):
+    return torch.cat([x[..., 0], x[..., 1]], dim=-1)
+
+
+def _qllm_complex_norm(z, scale, eps=1e-6):
+    mag = _qllm_cabs(z)
+    rms = torch.sqrt(mag.square().mean(dim=-1, keepdim=True) + eps)
+    scaled = (mag / rms) * scale
+    phase = z / (mag.unsqueeze(-1) + 1e-8)
+    return phase * scaled.unsqueeze(-1)
+
+
+def _qllm_mod_relu(z, bias):
+    mag = _qllm_cabs(z)
+    activated = F.relu(mag + bias)
+    phase = z / (mag.unsqueeze(-1) + 1e-8)
+    return phase * activated.unsqueeze(-1)
+
+
+def _qllm_mod_swish(z, bias, beta):
+    mag = _qllm_cabs(z)
+    activated = mag * torch.sigmoid(beta * mag + bias)
+    phase = z / (mag.unsqueeze(-1) + 1e-8)
+    return phase * activated.unsqueeze(-1)
+
+
+def _qllm_cgu_gate(gate, up):
+    gmag = _qllm_cabs(gate)
+    gate_mag = torch.sigmoid(gmag)
+    phase = gate / (gmag.unsqueeze(-1) + 1e-8)
+    pr, pi = phase[..., 0], phase[..., 1]
+    ur, ui = up[..., 0], up[..., 1]
+    out_r = (pr * ur - pi * ui) * gate_mag
+    out_i = (pr * ui + pi * ur) * gate_mag
+    return torch.stack([out_r, out_i], dim=-1)
+
+
+def _qllm_fused_decay_matrix(gamma, T):
+    log_gamma = torch.log(gamma + 1e-6)
+    C = torch.cumsum(-log_gamma, dim=-1)
+    log_D = (C.unsqueeze(-1) - C.unsqueeze(-2)).transpose(-1, -2)
+    causal = torch.tril(torch.ones(T, T, device=gamma.device, dtype=gamma.dtype))
+    log_D = log_D * causal + (1 - causal) * (-1e4)
+    return torch.exp(log_D.clamp(max=0.0))
+
+
+class _QllmComplexLinear(nn.Module):
+    def __init__(self, in_dim, out_dim, bias=True):
+        super().__init__()
+        scale = (2 / (in_dim + out_dim)) ** 0.5
+        self.weight_real = nn.Parameter(torch.empty(out_dim, in_dim))
+        self.weight_imag = nn.Parameter(torch.empty(out_dim, in_dim))
+        nn.init.orthogonal_(self.weight_real, gain=scale)
+        nn.init.orthogonal_(self.weight_imag, gain=scale)
+        if bias:
+            self.bias_real = nn.Parameter(torch.zeros(out_dim))
+            self.bias_imag = nn.Parameter(torch.zeros(out_dim))
+        else:
+            self.bias_real = self.bias_imag = None
+
+    def forward(self, x):
+        xr, xi = x[..., 0], x[..., 1]
+        yr = F.linear(xr, self.weight_real) - F.linear(xi, self.weight_imag)
+        yi = F.linear(xr, self.weight_imag) + F.linear(xi, self.weight_real)
+        if self.bias_real is not None:
+            yr = yr + self.bias_real
+            yi = yi + self.bias_imag
+        return torch.stack([yr, yi], dim=-1)
+
+
+class _QllmComplexNorm(nn.Module):
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.scale = nn.Parameter(torch.ones(dim))
+        self.eps = eps
+
+    def forward(self, z):
+        return _qllm_complex_norm(z, self.scale, self.eps)
+
+
+class _QllmModReLU(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.bias = nn.Parameter(torch.full((dim,), -0.1))
+
+    def forward(self, z):
+        return _qllm_mod_relu(z, self.bias)
+
+
+class _QllmModSwish(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.bias = nn.Parameter(torch.zeros(dim))
+        self.beta = nn.Parameter(torch.ones(dim))
+
+    def forward(self, z):
+        return _qllm_mod_swish(z, self.bias, self.beta)
+
+
+class _QllmPhaseModulatedActivation(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.bias = nn.Parameter(torch.zeros(dim))
+        self.beta = nn.Parameter(torch.ones(dim))
+        self.phase_alpha = nn.Parameter(torch.zeros(dim))
+        self.phase_beta = nn.Parameter(torch.zeros(dim))
+
+    def forward(self, z):
+        mag = _qllm_cabs(z)
+        activated = mag * torch.sigmoid(self.beta * mag + self.bias)
+        phase = z / (mag.unsqueeze(-1) + 1e-8)
+        theta = self.phase_alpha * mag + self.phase_beta
+        rot = torch.stack([theta.cos(), theta.sin()], dim=-1)
+        phase = _qllm_cmul(phase, rot)
+        return phase * activated.unsqueeze(-1)
+
+
+def _qllm_build_activation(name, dim):
+    if name == 'swish':
+        return _QllmModSwish(dim)
+    if name == 'phase_mod':
+        return _QllmPhaseModulatedActivation(dim)
+    return _QllmModReLU(dim)
+
+
+class _QllmComplexGatedUnit(nn.Module):
+    def __init__(self, dim, expand=3, activation='modrelu'):
+        super().__init__()
+        hidden = dim * expand
+        self.gate_proj = _QllmComplexLinear(dim, hidden, bias=False)
+        self.up_proj = _QllmComplexLinear(dim, hidden, bias=False)
+        self.down_proj = _QllmComplexLinear(hidden, dim, bias=False)
+        self.act = _qllm_build_activation(activation, hidden)
+
+    def forward(self, z):
+        gate = self.gate_proj(z)
+        up = self.act(self.up_proj(z))
+        gated = _qllm_cgu_gate(gate, up)
+        return self.down_proj(gated)
+
+
+class _QllmComplexEmbed(nn.Module):
+    def __init__(self, vocab_size, dim):
+        super().__init__()
+        self.dim = dim
+        self.embed_real = nn.Embedding(vocab_size, dim)
+        self.embed_imag = nn.Embedding(vocab_size, dim)
+        nn.init.normal_(self.embed_real.weight, std=0.02)
+        nn.init.normal_(self.embed_imag.weight, std=0.02)
+
+    def forward(self, ids):
+        return torch.stack([self.embed_real(ids), self.embed_imag(ids)], dim=-1)
+
+
+class _QllmComplexPosEmbed(nn.Module):
+    def __init__(self, max_seq_len, dim):
+        super().__init__()
+        self.max_seq_len = max_seq_len
+        self.pos_embed = nn.Embedding(max_seq_len, dim)
+        nn.init.normal_(self.pos_embed.weight, std=0.02)
+
+    def forward(self, z, step_offset=0):
+        T = z.shape[1]
+        end = step_offset + T
+        if end > self.max_seq_len:
+            raise ValueError(f'Position range exceeds max_seq_len {self.max_seq_len}')
+        pos = torch.arange(step_offset, end, device=z.device)
+        p = self.pos_embed(pos)
+        return z + p.unsqueeze(0).unsqueeze(-1)
+
+
+def _qllm_build_rope_cache(max_len, head_dim):
+    freqs = 1.0 / (10000.0 ** (torch.arange(head_dim).float() / head_dim))
+    positions = torch.arange(max_len).float()
+    angles = positions.unsqueeze(1) * freqs.unsqueeze(0)
+    return torch.stack([angles.cos(), angles.sin()], dim=-1)
+
+
+class _QllmPAMLayer(nn.Module):
+    def __init__(self, cfg, layer_idx=0):
+        super().__init__()
+        self.num_heads = cfg.n_heads
+        self.head_dim = cfg.head_dim
+        inner = cfg.n_heads * cfg.head_dim
+        self.inner_dim = inner
+        self.dim = cfg.dim
+        self.fused_qkv = cfg.fused_qkv
+        self.use_rope = cfg.use_rope
+        self.use_gsp = cfg.use_gsp
+        self.qk_norm = cfg.qk_norm
+        self.decay_mode = cfg.decay_mode
+        self.write_mode = cfg.write_mode
+        self.n_states = cfg.n_states
+        self.delta_chunk = cfg.delta_chunk
+        self.gate_content_aware = getattr(cfg, 'gate_content_aware', False)
+        self.protect_gate_bias = getattr(cfg, 'protect_gate_bias', -3.0)
+
+        if cfg.fused_qkv:
+            self.qkv_proj = _QllmComplexLinear(cfg.dim, 3 * inner, bias=False)
+        else:
+            self.q_proj = _QllmComplexLinear(cfg.dim, inner, bias=False)
+            self.k_proj = _QllmComplexLinear(cfg.dim, inner, bias=False)
+            self.v_proj = _QllmComplexLinear(cfg.dim, inner, bias=False)
+        self.o_proj = _QllmComplexLinear(inner, cfg.dim, bias=False)
+
+        decay_out = cfg.n_heads * (cfg.head_dim if cfg.decay_mode == 'per_channel' else 1)
+        self.dt_proj = nn.Linear(cfg.dim * 2, decay_out)
+        if cfg.decay_mode == 'per_channel':
+            self.dt_bias = nn.Parameter(torch.zeros(cfg.n_heads, cfg.head_dim) + cfg.base_dt_bias)
+        else:
+            self.dt_bias = nn.Parameter(torch.zeros(cfg.n_heads) + cfg.base_dt_bias)
+
+        if cfg.use_gsp:
+            gate_in = cfg.dim * 2 if self.gate_content_aware else cfg.dim
+            self.protect_gate = nn.Linear(gate_in, cfg.n_heads)
+            nn.init.constant_(self.protect_gate.bias, self.protect_gate_bias)
+
+        if cfg.n_states > 1:
+            offs = torch.linspace(-cfg.state_dt_spread, cfg.state_dt_spread, cfg.n_states)
+            self.state_dt_offset = nn.Parameter(offs.clone())
+            self.phase_proj = nn.Linear(cfg.dim, cfg.n_heads * cfg.n_states)
+            nn.init.zeros_(self.phase_proj.weight)
+            nn.init.zeros_(self.phase_proj.bias)
+
+        if cfg.use_rope:
+            self.register_buffer(
+                'rope_cache',
+                _qllm_build_rope_cache(cfg.max_seq_len, cfg.head_dim),
+                persistent=False,
+            )
+
+        self.dropout = nn.Dropout(cfg.dropout)
+        self.chunk_size = cfg.chunk_size
+        _causal_size = cfg.chunk_size if cfg.chunk_size > 0 else cfg.max_seq_len
+        self.register_buffer(
+            '_causal',
+            torch.tril(torch.ones(_causal_size, _causal_size)),
+            persistent=False,
+        )
+
+    def _project(self, x, step_offset):
+        B, T, _, _ = x.shape
+        H, d = self.num_heads, self.head_dim
+        if self.fused_qkv:
+            qkv = self.qkv_proj(x).view(B, T, 3, H, d, 2)
+            q = qkv[:, :, 0].transpose(1, 2).contiguous()
+            k = qkv[:, :, 1].transpose(1, 2).contiguous()
+            v = qkv[:, :, 2].transpose(1, 2).contiguous()
+        else:
+            q = self.q_proj(x).view(B, T, H, d, 2).transpose(1, 2).contiguous()
+            k = self.k_proj(x).view(B, T, H, d, 2).transpose(1, 2).contiguous()
+            v = self.v_proj(x).view(B, T, H, d, 2).transpose(1, 2).contiguous()
+
+        if self.use_rope:
+            end = step_offset + T
+            if end > self.rope_cache.shape[0]:
+                self.register_buffer(
+                    'rope_cache',
+                    _qllm_build_rope_cache(end * 2, d).to(x.device),
+                    persistent=False,
+                )
+            pos = self.rope_cache[step_offset:end].to(dtype=x.dtype)
+            q = _qllm_cmul(q, pos)
+            k = _qllm_cmul(k, pos)
+
+        if self.qk_norm:
+            q = _qllm_cnormalize(q)
+            k = _qllm_cnormalize(k)
+        return q, k, v
+
+    def _gamma_and_vprime(self, x, v, state_offset=0.0):
+        B, T = x.shape[0], x.shape[1]
+        H, d = self.num_heads, self.head_dim
+        x_flat = _qllm_to_real_concat(x)
+        if self.decay_mode == 'per_channel':
+            dt = self.dt_proj(x_flat).view(B, T, H, d)
+            dt = F.softplus(dt + self.dt_bias + state_offset)
+            dt = dt.permute(0, 2, 1, 3).contiguous()
+        else:
+            dt = self.dt_proj(x_flat)
+            dt = F.softplus(dt + self.dt_bias + state_offset)
+            dt = dt.transpose(1, 2).contiguous()
+
+        if self.use_gsp:
+            gate_in = _qllm_to_real_concat(x) if self.gate_content_aware else _qllm_cabs(x)
+            p = torch.sigmoid(self.protect_gate(gate_in)).transpose(1, 2)
+            if self.decay_mode == 'per_channel':
+                p_e = p.unsqueeze(-1)
+                gamma = torch.exp(-dt) * (1 - p_e) + p_e
+            else:
+                gamma = torch.exp(-dt) * (1 - p) + p
+            v_prime = v * (1 - p).unsqueeze(-1).unsqueeze(-1)
+        else:
+            gamma = torch.exp(-dt)
+            v_prime = v
+        return gamma, v_prime
+
+    @staticmethod
+    def _dual_form_block(q_s, k, v_prime, gamma, causal_mask):
+        B, H, T = gamma.shape
+        gamma_flat = gamma.reshape(B * H, T)
+        D = _qllm_fused_decay_matrix(gamma_flat, T).reshape(B, H, T, T)
+        qr, qi = q_s[..., 0], q_s[..., 1]
+        kr, ki = k[..., 0], k[..., 1]
+        wr = qr @ kr.transpose(-1, -2) + qi @ ki.transpose(-1, -2)
+        wi = qi @ kr.transpose(-1, -2) - qr @ ki.transpose(-1, -2)
+        ar, ai = wr * D, wi * D
+        vpr, vpi = v_prime[..., 0], v_prime[..., 1]
+        yr = ar @ vpr - ai @ vpi
+        yi = ar @ vpi + ai @ vpr
+        y = torch.stack([yr, yi], dim=-1)
+        D_last = D[:, :, -1, :]
+        wv_r = vpr * D_last.unsqueeze(-1)
+        wv_i = vpi * D_last.unsqueeze(-1)
+        sr = wv_r.transpose(-1, -2) @ kr + wv_i.transpose(-1, -2) @ ki
+        si = wv_i.transpose(-1, -2) @ kr - wv_r.transpose(-1, -2) @ ki
+        S_block = torch.stack([sr, si], dim=-1)
+        return y, S_block
+
+    def _forward_chunked_head(self, q, k, v_prime, gamma, d):
+        B, H, T = q.shape[:3]
+        C = self.chunk_size
+        scale = d ** -0.5
+        q_s = q * scale
+        S = q.new_zeros(B, H, d, d, 2)
+        outputs = []
+        for start in range(0, T, C):
+            end = min(start + C, T)
+            Tc = end - start
+            q_c, k_c = q_s[:, :, start:end], k[:, :, start:end]
+            v_c, g_c = v_prime[:, :, start:end], gamma[:, :, start:end]
+            causal = self._causal[:Tc, :Tc]
+            y_c, S_chunk = self._dual_form_block(q_c, k_c, v_c, g_c, causal)
+            log_g = torch.log(g_c + 1e-6)
+            cum_decay = torch.exp(torch.cumsum(log_g, dim=-1))
+            if start > 0:
+                Sr, Si = S[..., 0], S[..., 1]
+                qr_c, qi_c = q_c[..., 0], q_c[..., 1]
+                Sq_r = (Sr @ qr_c.transpose(-1, -2) - Si @ qi_c.transpose(-1, -2)).transpose(-1, -2)
+                Sq_i = (Sr @ qi_c.transpose(-1, -2) + Si @ qr_c.transpose(-1, -2)).transpose(-1, -2)
+                cd = cum_decay.unsqueeze(-1)
+                y_c = y_c + torch.stack([Sq_r * cd, Sq_i * cd], dim=-1)
+            outputs.append(y_c)
+            total_decay = cum_decay[:, :, -1]
+            S = S * total_decay[..., None, None, None] + S_chunk
+        return torch.cat(outputs, dim=2), S
+
+    def _forward_multistate(self, x, q, k, v_prime, d):
+        B, T = x.shape[0], x.shape[1]
+        H, K = self.num_heads, self.n_states
+        scale = d ** -0.5
+        phi = self.phase_proj(_qllm_cabs(x)).view(B, T, H, K).permute(0, 2, 3, 1)
+        y_sum = None
+        S_list = []
+        for kdx in range(K):
+            gamma_k, vp_k = self._gamma_and_vprime(
+                x, v_prime, state_offset=self.state_dt_offset[kdx]
+            )
+            if self.decay_mode == 'per_channel':
+                raise NotImplementedError("per_channel + multistate not implemented in qllm provider")
+            elif self.chunk_size > 0 and T > self.chunk_size:
+                y_k, S_k = self._forward_chunked_head(q, k, vp_k, gamma_k, d)
+            else:
+                q_s = q * scale
+                y_k, S_k = self._dual_form_block(q_s, k, vp_k, gamma_k, self._causal[:T, :T])
+            rot = torch.stack([
+                torch.cos(phi[:, :, kdx]),
+                torch.sin(phi[:, :, kdx])
+            ], dim=-1)
+            y_k = _qllm_cmul(y_k, rot.unsqueeze(-2))
+            y_sum = y_k if y_sum is None else y_sum + y_k
+            S_list.append(S_k)
+        return y_sum, torch.stack(S_list, dim=0)
+
+    def forward(self, x, state=None, step_offset=0):
+        B, T, _, _ = x.shape
+        H, d = self.num_heads, self.head_dim
+        q, k, v = self._project(x, step_offset)
+
+        if state is None and T > 1:
+            if self.n_states > 1:
+                y, new_state = self._forward_multistate(x, q, k, v, d)
+            elif self.decay_mode == 'per_channel':
+                raise NotImplementedError("per_channel decay not implemented in qllm provider")
+            elif self.write_mode == 'delta':
+                raise NotImplementedError("delta write not implemented in qllm provider")
+            else:
+                gamma, v_prime = self._gamma_and_vprime(x, v)
+                if self.chunk_size > 0 and T > self.chunk_size:
+                    y, new_state = self._forward_chunked_head(q, k, v_prime, gamma, d)
+                else:
+                    q_s = q * (d ** -0.5)
+                    y, new_state = self._dual_form_block(q_s, k, v_prime, gamma, self._causal[:T, :T])
+        else:
+            y, new_state = self._recurrent(x, q, k, v, state, d)
+
+        y = y.transpose(1, 2).contiguous().view(B, T, self.inner_dim, 2)
+        out = self.o_proj(y)
+        if self.training:
+            mask = self.dropout(torch.ones(B, T, self.dim, device=x.device))
+            out = out * mask.unsqueeze(-1)
+        return out, new_state
+
+    def _recurrent(self, x, q, k, v, state, d):
+        B, T = x.shape[0], x.shape[1]
+        H, K = self.num_heads, self.n_states
+        scale = d ** -0.5
+        if state is None:
+            if self.n_states > 1:
+                S = torch.zeros(K, B, H, d, d, 2, device=x.device, dtype=x.dtype)
+            else:
+                S = torch.zeros(B, H, d, d, 2, device=x.device, dtype=x.dtype)
+        else:
+            S = state
+
+        y_list = []
+        phi = None
+        if self.n_states > 1:
+            phi = self.phase_proj(_qllm_cabs(x)).view(B, T, H, K).permute(0, 2, 3, 1)
+        for t in range(T):
+            xt = x[:, t:t+1]
+            k_t = k[:, :, t]
+            q_t = q[:, :, t] * scale
+            v_t = v[:, :, t]
+            if self.n_states > 1:
+                y_acc = None
+                S_new = []
+                for kdx in range(K):
+                    gamma_k, vp_k = self._gamma_and_vprime(
+                        xt, v[:, :, t:t+1], state_offset=self.state_dt_offset[kdx]
+                    )
+                    g = gamma_k[:, :, 0]
+                    yk, Sk = self._recur_step_additive(S[kdx], g, vp_k[:, :, 0], k_t, q_t)
+                    rot = torch.stack([
+                        torch.cos(phi[:, :, kdx, t]),
+                        torch.sin(phi[:, :, kdx, t])
+                    ], dim=-1)
+                    yk = _qllm_cmul(yk, rot.unsqueeze(-2))
+                    y_acc = yk if y_acc is None else y_acc + yk
+                    S_new.append(Sk)
+                y_list.append(y_acc)
+                S = torch.stack(S_new, dim=0)
+                continue
+
+            gamma, v_prime = self._gamma_and_vprime(xt, v[:, :, t:t+1])
+            g = gamma[:, :, 0]
+            vp_t = v_prime[:, :, 0]
+            yk, S = self._recur_step_additive(S, g, vp_t, k_t, q_t)
+            y_list.append(yk)
+
+        y = torch.stack(y_list, dim=2)
+        return y, S
+
+    def _recur_step_additive(self, S, g, v_t, k_t, q_t):
+        k_conj = torch.stack([k_t[..., 0], -k_t[..., 1]], dim=-1).unsqueeze(-3)
+        outer_r = v_t[..., 0].unsqueeze(-1) * k_conj[..., 0] - v_t[..., 1].unsqueeze(-1) * k_conj[..., 1]
+        outer_i = v_t[..., 0].unsqueeze(-1) * k_conj[..., 1] + v_t[..., 1].unsqueeze(-1) * k_conj[..., 0]
+        outer = torch.stack([outer_r, outer_i], dim=-1)
+        if g.dim() == S.dim() - 3:
+            gg = g.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        else:
+            gg = g.unsqueeze(-2).unsqueeze(-1)
+        S = S * gg + outer
+        sq_r = S[..., 0] * q_t[..., 0].unsqueeze(-2) - S[..., 1] * q_t[..., 1].unsqueeze(-2)
+        sq_i = S[..., 0] * q_t[..., 1].unsqueeze(-2) + S[..., 1] * q_t[..., 0].unsqueeze(-2)
+        y = torch.stack([sq_r.sum(dim=-1), sq_i.sum(dim=-1)], dim=-1)
+        return y, S
+
+
+class _QllmBlock(nn.Module):
+    def __init__(self, cfg, layer_idx=0):
+        super().__init__()
+        self.norm1 = _QllmComplexNorm(cfg.dim)
+        self.cgu = _QllmComplexGatedUnit(cfg.dim, cfg.expand, activation=cfg.activation)
+        self.cgu_scale = nn.Parameter(torch.tensor(1.0))
+        self.cgu_dropout = nn.Dropout(cfg.dropout)
+        self.norm2 = _QllmComplexNorm(cfg.dim)
+        self.pam = _QllmPAMLayer(cfg, layer_idx=layer_idx)
+        self.pam_scale = nn.Parameter(torch.tensor(0.1))
+
+    def forward(self, x, pam_state=None, step_offset=0):
+        cgu_out = self.cgu(self.norm1(x))
+        if self.training:
+            drop = self.cgu_dropout(torch.ones(cgu_out.shape[:-1], device=cgu_out.device))
+            cgu_out = cgu_out * drop.unsqueeze(-1)
+        x = x + cgu_out * self.cgu_scale
+        pam_out, new_state = self.pam(self.norm2(x), state=pam_state, step_offset=step_offset)
+        x = x + pam_out * self.pam_scale
+        return x, new_state
+
+
+class _QllmLM(nn.Module):
+    def __init__(self, cfg):
+        super().__init__()
+        self.config = cfg
+        self.embed = _QllmComplexEmbed(cfg.vocab_size, cfg.dim)
+        self.pos_embed = _QllmComplexPosEmbed(cfg.max_seq_len, cfg.dim) if cfg.use_learned_pos else None
+        self.embed_norm = _QllmComplexNorm(cfg.dim)
+        self.blocks = nn.ModuleList([_QllmBlock(cfg, layer_idx=i) for i in range(cfg.n_layers)])
+        self.output_norm = _QllmComplexNorm(cfg.dim)
+        self.lm_head_proj = _QllmComplexLinear(cfg.dim, cfg.dim)
+        self.lm_head_norm = _QllmComplexNorm(cfg.dim)
+        self._init_weights()
+
+    def _init_weights(self):
+        embed_embeddings = {self.embed.embed_real, self.embed.embed_imag}
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.normal_(module.weight, std=0.02)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.Embedding) and module not in embed_embeddings:
+                nn.init.normal_(module.weight, std=0.02)
+        for _, module in self.named_modules():
+            if hasattr(module, 'protect_gate') and isinstance(module.protect_gate, nn.Linear):
+                nn.init.constant_(module.protect_gate.bias, getattr(module, 'protect_gate_bias', -3.0))
+
+    def forward(self, input_ids, states=None, step_offset=0, labels=None):
+        z = self.embed(input_ids)
+        if self.pos_embed is not None:
+            z = self.pos_embed(z, step_offset=step_offset)
+        z = self.embed_norm(z)
+        new_states = []
+        for i, block in enumerate(self.blocks):
+            s = states[i] if states is not None else None
+            z, new_s = block(z, pam_state=s, step_offset=step_offset)
+            new_states.append(new_s)
+        z = self.output_norm(z)
+        lm = self.lm_head_norm(self.lm_head_proj(z))
+        logits = (
+            lm[..., 0] @ self.embed.embed_real.weight.T
+            + lm[..., 1] @ self.embed.embed_imag.weight.T
+        )
+        return logits, new_states, torch.tensor(0.0, device=input_ids.device)
+
+    @torch.no_grad()
+    def generate(self, input_ids, max_new_tokens=100, temperature=1.0,
+                 top_k=50, top_p=0.0, repetition_penalty=1.0, eos_token_id=None):
+        self.eval()
+        generated = input_ids.clone()
+        logits, states, _ = self.forward(generated)
+        step = generated.shape[1]
+        finished = torch.zeros(generated.shape[0], dtype=torch.bool, device=generated.device)
+        for _ in range(max_new_tokens):
+            next_logits = logits[:, -1]
+            if temperature > 0:
+                next_logits = next_logits / temperature
+            if repetition_penalty != 1.0:
+                score = torch.gather(next_logits, 1, generated)
+                score = torch.where(score > 0, score / repetition_penalty, score * repetition_penalty)
+                next_logits.scatter_(1, generated, score)
+            if top_k > 0 and temperature > 0:
+                v, _ = next_logits.topk(min(top_k, next_logits.size(-1)))
+                next_logits[next_logits < v[:, -1:]] = float('-inf')
+            if top_p > 0 and temperature > 0:
+                sl, si = next_logits.sort(descending=True)
+                cum = sl.softmax(dim=-1).cumsum(dim=-1)
+                rm = cum - sl.softmax(dim=-1) >= top_p
+                sl[rm] = float('-inf')
+                next_logits = sl.scatter(1, si, sl)
+            if temperature <= 0:
+                nxt = next_logits.argmax(dim=-1, keepdim=True)
+            else:
+                nxt = torch.multinomial(next_logits.softmax(dim=-1), 1)
+            generated = torch.cat([generated, nxt], dim=1)
+            if eos_token_id is not None:
+                finished |= nxt.squeeze(1) == eos_token_id
+                if bool(finished.all()):
+                    break
+            logits, states, _ = self.forward(nxt, states=states, step_offset=step)
+            step += 1
+        return generated
+
+
+def _qllm_config_from_dict(d: dict) -> _QllmConfig:
+    fields = {
+        'vocab_size', 'dim', 'n_heads', 'head_dim', 'n_layers', 'expand',
+        'dropout', 'max_seq_len', 'use_learned_pos', 'use_rope', 'use_gsp',
+        'fused_qkv', 'qk_norm', 'tie_weights', 'gradient_checkpointing',
+        'activation', 'chunk_size', 'decay_mode', 'write_mode', 'n_states',
+        'delta_chunk', 'state_dt_spread', 'base_dt_bias', 'gate_content_aware',
+        'protect_gate_bias',
+    }
+    return _QllmConfig(**{k: v for k, v in d.items() if k in fields})
+
+
+_QLLM_MODEL_CACHE: Dict[str, Any] = {}
+
+
+def _load_qllm_model_native(checkpoint_path: str, device):
+    import torch
+    cache_key = f"{checkpoint_path}:{str(device)}"
+    if cache_key in _QLLM_MODEL_CACHE:
+        return _QLLM_MODEL_CACHE[cache_key]
+
+    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    if 'config' in ckpt:
+        cfg = _qllm_config_from_dict(ckpt['config'])
+    else:
+        model_dir = os.path.dirname(checkpoint_path)
+        config_path = os.path.join(model_dir, 'config.json')
+        with open(config_path, 'r') as f:
+            cfg = _qllm_config_from_dict(json.load(f))
+
+    model = _QllmLM(cfg)
+    model.load_state_dict(ckpt['model_state_dict'])
+    if device is not None:
+        model.to(device)
+    model.eval()
+    _QLLM_MODEL_CACHE[cache_key] = model
+    return model
+
+
+def _get_qllm_tokenizer_native(model):
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained("gpt2")
+    extras = [_QLLM_IM_START, _QLLM_IM_END]
+    if getattr(model.config, "vocab_size", 50257) >= 50261:
+        extras.extend([_QLLM_THINK_START, _QLLM_THINK_END])
+    tok.add_special_tokens({"additional_special_tokens": extras})
+    tok.pad_token = tok.eos_token
+    if len(tok) != model.config.vocab_size:
+        raise ValueError(
+            f"Tokenizer vocab ({len(tok)}) does not match model vocab_size "
+            f"({model.config.vocab_size})"
+        )
+    return tok
+
+
+def _format_qllm_chat_messages(messages, default_system="You are a helpful assistant."):
+    system_prompt = default_system
+    for msg in messages:
+        if msg.get("role") == "system" and str(msg.get("content", "")).strip():
+            system_prompt = str(msg.get("content", "")).strip()
+            break
+    parts = [f"{_QLLM_IM_START}system\n{system_prompt}{_QLLM_IM_END}\n"]
+    for msg in messages:
+        role = str(msg.get("role", "")).strip().lower()
+        content = str(msg.get("content", "")).strip()
+        if role in ("system", "") or not content:
+            continue
+        parts.append(f"{_QLLM_IM_START}{role}\n{content}{_QLLM_IM_END}\n")
+    return "".join(parts) + f"{_QLLM_IM_START}assistant\n"
+
+
+def _stream_qllm_native_tokens(
+    model, tokenizer, input_ids, im_end_id, max_new_tokens,
+    temperature, top_k, top_p, repetition_penalty,
+):
+    generated = input_ids.clone()
+    logits, states, _ = model.forward(generated)
+    step = generated.shape[1]
+    for _ in range(max_new_tokens):
+        next_logits = logits[:, -1].clone()
+        if temperature > 0:
+            next_logits = next_logits / temperature
+        if repetition_penalty != 1.0:
+            score = torch.gather(next_logits, 1, generated)
+            score = torch.where(score > 0, score / repetition_penalty, score * repetition_penalty)
+            next_logits.scatter_(1, generated, score)
+        if top_k > 0 and temperature > 0:
+            v, _ = next_logits.topk(min(top_k, next_logits.size(-1)))
+            next_logits[next_logits < v[:, -1:]] = float('-inf')
+        if top_p > 0 and temperature > 0:
+            sl, si = next_logits.sort(descending=True)
+            cum = sl.softmax(dim=-1).cumsum(dim=-1)
+            rm = cum - sl.softmax(dim=-1) >= top_p
+            sl[rm] = float('-inf')
+            next_logits = sl.scatter(1, si, sl)
+        if temperature <= 0:
+            nxt = next_logits.argmax(dim=-1, keepdim=True)
+        else:
+            nxt = torch.multinomial(next_logits.softmax(dim=-1), 1)
+        token_id = int(nxt[0, 0].item())
+        if token_id == im_end_id:
+            break
+        generated = torch.cat([generated, nxt], dim=1)
+        token_text = tokenizer.decode([token_id], skip_special_tokens=False)
+        if token_text:
+            yield {"content": token_text}
+        logits, states, _ = model.forward(nxt, states=states, step_offset=step)
+        step += 1
+
+
+def get_qllm_response(
+    prompt: str = None,
+    model: str = None,
+    messages: List[Dict[str, str]] = None,
+    tools: list = None,
+    tool_map: Dict = None,
+    format: str = None,
+    stream: bool = False,
+    attachments: List[str] = None,
+    auto_process_tool_calls: bool = False,
+    **kwargs,
+) -> Dict[str, Any]:
+    import torch
+    result = {
+        "response": None,
+        "messages": messages.copy() if messages else [],
+        "raw_response": None,
+        "tool_calls": [],
+        "tool_results": [],
+    }
+
+    if model is None:
+        raise ValueError("No QLLM model specified. Pass a directory or .pt checkpoint path.")
+
+    checkpoint_path, _ = _resolve_qllm_checkpoint(model)
+
+    if attachments:
+        logger.warning("QLLM provider does not support attachments yet; ignoring.")
+
+    if prompt:
+        if result["messages"] and result["messages"][-1].get("role") == "user":
+            result["messages"][-1]["content"] = prompt
+        else:
+            result["messages"].append({"role": "user", "content": prompt})
+
+    if format == "json":
+        json_instruction = """If you are returning a json object, begin directly with the opening {.
+Do not include any additional markdown formatting or leading ```json tags in your response."""
+        if result["messages"] and result["messages"][-1].get("role") == "user":
+            result["messages"][-1]["content"] += "\n" + json_instruction
+
+    device = _get_qllm_device(kwargs.pop("device", None))
+    qllm_model = _load_qllm_model_native(checkpoint_path, device)
+    tokenizer = _get_qllm_tokenizer_native(qllm_model)
+
+    chat_text = _format_qllm_chat_messages(result["messages"])
+    input_ids = tokenizer.encode(chat_text, return_tensors="pt").to(device)
+    im_end_id = tokenizer.convert_tokens_to_ids(_QLLM_IM_END)
+
+    max_new_tokens = kwargs.pop("max_tokens", kwargs.pop("max_new_tokens", 256))
+    temperature = kwargs.pop("temperature", 0.7)
+    top_k = kwargs.pop("top_k", 50)
+    top_p = kwargs.pop("top_p", 0.9)
+    repetition_penalty = kwargs.pop("repetition_penalty", 1.15)
+
+    if stream:
+        result["response"] = _stream_qllm_native_tokens(
+            qllm_model, tokenizer, input_ids, im_end_id,
+            max_new_tokens, temperature, top_k, top_p, repetition_penalty,
+        )
+        return result
+
+    with torch.no_grad():
+        output_ids = qllm_model.generate(
+            input_ids,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            eos_token_id=im_end_id,
+        )
+
+    generated_ids = output_ids[0, input_ids.shape[1]:].tolist()
+    response_content = tokenizer.decode(generated_ids, skip_special_tokens=False)
+    if _QLLM_IM_END in response_content:
+        response_content = response_content.split(_QLLM_IM_END, 1)[0].strip()
+
+    result["response"] = response_content
+    result["raw_response"] = response_content
+    result["messages"].append({"role": "assistant", "content": response_content})
+
+    if auto_process_tool_calls and tools and tool_map:
+        detected_tools = []
+        for tool in tools:
+            tool_name = tool.get("function", {}).get("name", "")
+            if tool_name in response_content:
+                detected_tools.append({
+                    "id": str(uuid.uuid4()),
+                    "function": {"name": tool_name, "arguments": "{}"},
+                })
+        if detected_tools:
+            result["tool_calls"] = detected_tools
+            result = process_tool_calls(result, tool_map, model, "qllm", result["messages"], tools=tools)
+
+    if format == "json":
+        try:
+            cleaned = response_content
+            if cleaned.startswith("```json"):
+                cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+            parsed_response = json.loads(cleaned)
+            result["response"] = parsed_response
+        except json.JSONDecodeError:
+            result["error"] = f"Invalid JSON response: {response_content}"
+
+    return result
+
+
 def get_litellm_response(
     prompt: str = None,
     model: str = None,
@@ -1326,6 +2214,19 @@ def get_litellm_response(
             tool_map=tool_map,
             format=format,
             messages=messages,
+            auto_process_tool_calls=auto_process_tool_calls,
+            **kwargs
+        )
+    elif provider == 'qllm':
+        return get_qllm_response(
+            prompt,
+            model,
+            messages=messages,
+            tools=tools,
+            tool_map=tool_map,
+            format=format,
+            stream=stream,
+            attachments=attachments,
             auto_process_tool_calls=auto_process_tool_calls,
             **kwargs
         )

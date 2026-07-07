@@ -840,10 +840,7 @@ The current date and time are : {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
     if team is not None and npc.name == getattr(team, 'forenpc_name', 'sibiji'):
         team_context = team.context if hasattr(team, "context") and team.context else ""
-        team_preferences = team.shared_context.get('preferences', '') if hasattr(team, "shared_context") else ""
         system_message += f"\nTeam context: {team_context}\n"
-        if team_preferences:
-            system_message += f"Team preferences: {team_preferences}\n"
 
         if hasattr(team, 'npcs') and team.npcs:
             members = []
@@ -928,6 +925,30 @@ def load_env_from_execution_dir() -> None:
     else:
         logging.warning(f"Warning: No .env file found in {execution_dir}")
 
+def _is_qllm_model_path(model: str) -> bool:
+    """Return True if ``model`` points to a QLLM-PAM checkpoint/directory."""
+    if not model:
+        return False
+    path = os.path.expanduser(model)
+    if os.path.isfile(path) and path.endswith(".pt"):
+        path = os.path.dirname(path)
+    if os.path.isdir(path):
+        has_checkpoint = any(f.endswith(".pt") for f in os.listdir(path))
+        has_config = os.path.exists(os.path.join(path, "config.json"))
+        return has_checkpoint and has_config
+    return False
+
+
+def _is_qllm_hf_repo(model: str) -> bool:
+    """Return True if ``model`` looks like a QLLM-PAM Hugging Face repo id."""
+    if not model:
+        return False
+    if "/" not in model or os.path.exists(model):
+        return False
+    lowered = model.lower()
+    return "qllm" in lowered and "pam" in lowered
+
+
 def lookup_provider(model: str) -> str:
     """
     Determine the provider based on the model name.
@@ -941,6 +962,8 @@ def lookup_provider(model: str) -> str:
     """
     if not model:
         return None
+    if _is_qllm_model_path(model) or _is_qllm_hf_repo(model):
+        return "qllm"
     if os.path.isdir(os.path.expanduser(model)):
         adapter_config = os.path.join(os.path.expanduser(model), 'adapter_config.json')
         if os.path.exists(adapter_config):

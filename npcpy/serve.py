@@ -3466,8 +3466,6 @@ def read_ctx_file(file_path):
                         else {"value": item}
                         for item in data['mcp_servers']
                     ]
-                if 'preferences' in data and isinstance(data['preferences'], list):
-                    data['preferences'] = [{"value": item} for item in data['preferences']]
                 if 'websites' in data and isinstance(data['websites'], list):
                     data['websites'] = [{"value": item} for item in data['websites']]
                 return data
@@ -3503,8 +3501,6 @@ def write_ctx_file(file_path, data):
             elif isinstance(item, str):
                 normalized.append(item)
         data_to_save['mcp_servers'] = normalized
-    if 'preferences' in data_to_save and isinstance(data_to_save['preferences'], list):
-        data_to_save['preferences'] = [item.get("value", "") for item in data_to_save['preferences'] if isinstance(item, dict)]
     if 'websites' in data_to_save and isinstance(data_to_save['websites'], list):
         data_to_save['websites'] = [item.get("value", "") for item in data_to_save['websites'] if isinstance(item, dict)]
     os.makedirs(os.path.dirname(file_path), exist_ok=True)

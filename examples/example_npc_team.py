@@ -58,11 +58,7 @@ def setup_test_team():
     
     
     team_context = {
-        "forenpc": "coordinator",
-        "preferences": {
-            "communication_style": "professional",
-            "output_format": "structured"
-        }
+        "forenpc": "coordinator"
     }
     
     ctx_path = os.path.join(team_dir, "team.ctx")

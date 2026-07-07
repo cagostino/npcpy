@@ -966,6 +966,25 @@ model_path = run_sft(X_train, y_train, config=sft_config, format_style="llama")
 
 Works with all major LLM providers through LiteLLM: `ollama`, `openai`, `anthropic`, `gemini`, `deepseek`, `airllm`, `openai-like`, and more.
 
+### QLLM-PAM (local, attention-free)
+
+`npcpy` can run the QLLM-PAM family of local checkpoints directly. QLLM-PAM is a complex-valued, attention-free language model based on Phase-Associative Memory (PAM); see the [Hugging Face model repo](https://huggingface.co/gowravvishwakarma/qllm-pam-v11-e3k3-chat) and the paper on arXiv ([2604.05030](https://arxiv.org/abs/2604.05030)).
+
+```python
+from npcpy import get_llm_response
+
+response = get_llm_response(
+    "What is the capital of France?",
+    model="gowravvishwakarma/qllm-pam-v11-e3k3-chat",
+    provider="qllm",
+    max_tokens=32,
+    temperature=0.0,
+)
+print(response["response"])
+```
+
+The `model` value can be a Hugging Face repo id (downloaded and cached automatically), a local directory, or a `.pt` file path. Supported kwargs include `max_tokens`, `temperature`, `top_k`, `top_p`, `repetition_penalty`, `stream=True`, and `format="json"`.
+
 ## Installation
 
 ```bash

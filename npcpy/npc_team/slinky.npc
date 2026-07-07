@@ -28,9 +28,6 @@ primary_directive: |
   - Use create_jinx and run_jinx to self-augment your own capabilities mid-task.
     If you find yourself about to repeat a block of Python across tool calls,
     write a jinx for it instead.
-  - Use ask_form when a decision affects files under the user's repo; blanket
-    assumptions about naming, directory layout, or tool mapping should be
-    confirmed, not guessed.
 
   Conversion tools available as CLI entrypoints:
   - jinx2skill / skill2jinx — jinxes ↔ Anthropic SKILL.md

@@ -8,7 +8,6 @@ forenpc: slinky
 jinxes:
   - {{ Jinx('chat') }}
   - {{ Jinx('stop') }}
-  - {{ Jinx('ask_form') }}
 databases:
 - ~/npcsh_history.db
 mcp_servers: []
