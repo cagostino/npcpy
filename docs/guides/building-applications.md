@@ -365,10 +365,6 @@ databases:
   - customer_insights
   - sales_performance
 
-preferences:
-  - detail-oriented analysis
-  - predictive modeling
-
 file_patterns:
   - pattern: "*.md"
     recursive: true
@@ -417,7 +413,7 @@ The system message sent to the LLM is assembled from multiple sources:
 2. Current working directory and timestamp
 3. Memory context (recent facts and key concepts from the knowledge graph)
 4. Database information (available tables)
-5. Team context (team description, preferences, member list with directives)
+5. Team context (team description, member list with directives)
 6. Available tools and jinxes with descriptions
 
 See `npcpy.npc_sysenv.get_system_message()` for the full assembly logic.

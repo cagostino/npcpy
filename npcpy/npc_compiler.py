@@ -282,7 +282,6 @@ def initialize_npc_project(
         default_ctx = {
             'name': '',
             'context' : context or '',
-            'preferences': '',
             'mcp_servers': '',
             'databases':'',
             'forenpc': 'forenpc'
@@ -356,7 +355,7 @@ def _update_field_in_yaml(content, field, new_value):
 
 DEFAULT_MD_AGENT_JINXES = [
     'sh', 'python', 'edit_file', 'load_file', 'file_search',
-    'web_search', 'ask_form', 'chat', 'stop',
+    'web_search', 'chat', 'stop',
 ]
 
 
