@@ -1917,13 +1917,25 @@ def get_models():
         for entry in providers_list:
             if isinstance(entry, str):
                 provider_name = entry
+                if provider_name == "models":
+                    continue
                 for model_name, model_provider in available.items():
                     if model_provider == provider_name:
                         _add_model(model_name, provider_name)
             elif isinstance(entry, dict):
-                for provider_name, model_list in entry.items():
-                    if isinstance(model_list, list):
-                        for model_name in model_list:
+                provider_name = entry.get("provider_type") or entry.get("name")
+                if not provider_name or provider_name == "models":
+                    continue
+                base_model = entry.get("model")
+                if base_model:
+                    _add_model(base_model, provider_name)
+                model_list = entry.get("models")
+                if isinstance(model_list, list):
+                    for model_name in model_list:
+                        _add_model(model_name, provider_name)
+                if not base_model and not model_list:
+                    for model_name, model_provider in available.items():
+                        if model_provider == provider_name:
                             _add_model(model_name, provider_name)
     def _collect_team_models(team, scan_path):
         team_providers = getattr(team, 'providers', None)
