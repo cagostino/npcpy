@@ -140,6 +140,7 @@ def sanitize_messages(messages: list) -> list:
 
 
 TOKEN_COSTS = {
+    "MiniMax-M3": (0.60, 2.40),
     "gpt-4o": (2.50, 10.00),
     "gpt-4o-mini": (0.15, 0.60),
     "gpt-4-turbo": (10.00, 30.00),
@@ -207,6 +208,9 @@ def get_model_context_window(model: str, provider: str = None) -> int:
     """
     if not model:
         return 0
+
+    if model.split("/")[-1].lower() == "minimax-m3":
+        return 1_000_000
 
     try:
         info = litellm.get_model_info(model)
@@ -2249,6 +2253,9 @@ def get_litellm_response(
         api_key = api_key or "omlx"
         if 'timeout' not in kwargs:
             kwargs['timeout'] = 300
+    elif provider == 'minimax':
+        api_url = api_url or os.environ.get("MINIMAX_API_URL") or "https://api.minimax.io/v1"
+        provider = "openai"
 
     if attachments:
         for attachment in attachments:

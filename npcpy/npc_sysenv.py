@@ -147,6 +147,7 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
 
         provider_model_attrs = {
             "anthropic": ("ANTHROPIC_API_KEY", "anthropic_models"),
+            "minimax": ("MINIMAX_API_KEY", None),
             "moonshot": ("MOONSHOT_API_KEY", "moonshot_models"),
             "openai": ("OPENAI_API_KEY", "open_ai_chat_completion_models"),
             "gemini": ("GEMINI_API_KEY", "gemini_models"),
@@ -180,7 +181,7 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
             if litellm is None:
                 continue
             try:
-                model_set = getattr(litellm, attr_name, None)
+                model_set = {"MiniMax-M3"} if attr_name is None else getattr(litellm, attr_name, None)
                 if not model_set:
                     continue
                 for model_id in model_set:
@@ -1005,6 +1006,9 @@ def lookup_provider(model: str) -> str:
         adapter_config = os.path.join(os.path.expanduser(model), 'adapter_config.json')
         if os.path.exists(adapter_config):
             return "lora"
+
+    if model == "MiniMax-M3":
+        return "minimax"
 
     if model == "deepseek-chat" or model == "deepseek-reasoner":
         return "deepseek"
