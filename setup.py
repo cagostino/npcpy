@@ -16,7 +16,7 @@ def package_files(directory):
 
 base_requirements = [
     "jinja2",
-    "litellm==1.81.13",    
+    "litellm==1.91.1",
     "scipy", 
     "numpy",
     "requests",
@@ -47,7 +47,7 @@ base_requirements = [
     "psycopg2-binary",
     "flask_sse",
     "mcp",
-    "httpx>=0.27.0,<0.28.0",
+    "httpx>=0.28.0,<1.0",
 ]
 
 
@@ -85,7 +85,7 @@ extra_files = package_files("npcpy/npc_team/")
 
 setup(
     name="npcpy",
-    version="2.1.6",
+    version="2.1.7",
     packages=find_packages(exclude=["tests*"]),
     install_requires=base_requirements,  
     extras_require={
