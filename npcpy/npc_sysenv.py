@@ -211,6 +211,8 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
         models_dir,
         os.path.expanduser('~/models'),
         os.path.expanduser('~/.cache/huggingface/hub'),
+        os.path.expanduser('~/.lmstudio/models'),
+        os.path.expanduser('~/.incognide/models'),
     ]
     resolved_gguf = gguf_dir or os.environ.get('GGUF_DIR')
     if resolved_gguf:
@@ -252,6 +254,41 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
                 available_models[model_id] = "llamacpp-server"
     except Exception as e:
         logging.debug(f"llama.cpp server not available: {e}")
+
+    def _detect_llama_cpp_python():
+        home = os.path.expanduser('~')
+        pipx_shared_paths = [
+            os.path.join(home, '.local', 'pipx', 'shared'),
+            os.path.join(home, '.local', 'share', 'pipx', 'shared'),
+        ]
+        for venv_base in [os.path.join(home, '.local', 'pipx', 'venvs'), os.path.join(home, '.local', 'share', 'pipx', 'venvs')]:
+            if os.path.isdir(venv_base):
+                for venv in os.listdir(venv_base):
+                    site_packages = os.path.join(venv_base, venv, 'lib')
+                    if os.path.isdir(site_packages):
+                        for root, dirs, files in os.walk(site_packages):
+                            if 'llama_cpp' in dirs:
+                                pipx_shared_paths.append(root)
+                                dirs.remove('llama_cpp')
+        for extra in pipx_shared_paths:
+            if extra not in sys.path and os.path.isdir(extra):
+                sys.path.insert(0, extra)
+        try:
+            import llama_cpp
+            return 'llamacpp-python'
+        except Exception:
+            return None
+        finally:
+            for extra in pipx_shared_paths:
+                if extra in sys.path:
+                    sys.path.remove(extra)
+
+    try:
+        llama_cpp_provider = _detect_llama_cpp_python()
+        if llama_cpp_provider:
+            available_models['llama-cpp-python'] = llama_cpp_provider
+    except Exception as e:
+        logging.debug(f"llama-cpp-python not available: {e}")
 
     try:
         import requests
