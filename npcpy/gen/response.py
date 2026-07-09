@@ -139,64 +139,38 @@ def sanitize_messages(messages: list) -> list:
     return merged
 
 
-TOKEN_COSTS = {
-    "MiniMax-M3": (0.60, 2.40),
-    "gpt-4o": (2.50, 10.00),
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4-turbo": (10.00, 30.00),
-    "gpt-3.5-turbo": (0.50, 1.50),
-    "gpt-5": (1.25, 10.00),
-    "gpt-5-mini": (0.25, 2.00),
-    "o1": (15.00, 60.00),
-    "o1-mini": (3.00, 12.00),
-    "o3": (10.00, 40.00),
-    "o3-mini": (1.10, 4.40),
-    "o4-mini": (1.10, 4.40),
-    "claude-3-5-sonnet": (3.00, 15.00),
-    "claude-3-opus": (15.00, 75.00),
-    "claude-3-haiku": (0.25, 1.25),
-    "claude-sonnet-4": (3.00, 15.00),
-    "claude-opus-4": (15.00, 75.00),
-    "claude-opus-4-5": (5.00, 25.00),
-    "claude-sonnet-4-5": (3.00, 15.00),
-    "claude-haiku-4": (0.80, 4.00),
-    "gemini-1.5-pro": (1.25, 5.00),
-    "gemini-1.5-flash": (0.075, 0.30),
-    "gemini-2.0-flash": (0.10, 0.40),
-    "gemini-2.5-pro": (1.25, 10.00),
-    "gemini-2.5-flash": (0.15, 0.60),
-    "gemini-3.1-pro": (2.00, 12.00),
-    "llama-3": (0.05, 0.08),
-    "llama-3.1": (0.05, 0.08),
-    "llama-3.2": (0.05, 0.08),
-    "llama-4": (0.05, 0.10),
-    "mixtral": (0.24, 0.24),
-    "deepseek-v3": (0.27, 1.10),
-    "deepseek-r1": (0.55, 2.19),
-    "mistral-large": (2.00, 6.00),
-    "mistral-small": (0.20, 0.60),
-    "grok-2": (2.00, 10.00),
-    "grok-3": (3.00, 15.00),
-}
-
 def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Calculate cost in USD for a response."""
-    if not model:
+    """Calculate cost in USD for a response using litellm's model cost database."""
+    if not model or input_tokens < 0 or output_tokens < 0:
         return 0.0
 
-    model_key = model.split("/")[-1].lower()
+    def _cost_from_info(info: dict) -> float | None:
+        in_cost = info.get("input_cost_per_token") or 0
+        out_cost = info.get("output_cost_per_token") or 0
+        if not in_cost and not out_cost:
+            return None
+        return (input_tokens * float(in_cost)) + (output_tokens * float(out_cost))
 
-    costs = None
-    for key, cost in TOKEN_COSTS.items():
-        if key in model_key or model_key in key:
-            costs = cost
-            break
+    try:
+        info = litellm.get_model_info(model)
+        cost = _cost_from_info(info)
+        if cost is not None:
+            return cost
+    except Exception:
+        pass
 
-    if not costs:
-        return 0.0
+    # Try with provider prefix (e.g. openai/gpt-4o)
+    try:
+        provider = lookup_provider(model)
+        if provider:
+            info = litellm.get_model_info(f"{provider}/{model}")
+            cost = _cost_from_info(info)
+            if cost is not None:
+                return cost
+    except Exception:
+        pass
 
-    input_cost, output_cost = costs
-    return (input_tokens * input_cost / 1_000_000) + (output_tokens * output_cost / 1_000_000)
+    return 0.0
 
 def get_model_context_window(model: str, provider: str = None) -> int:
     """Get the context window size (max input tokens) for a model.
@@ -209,9 +183,6 @@ def get_model_context_window(model: str, provider: str = None) -> int:
     if not model:
         return 0
 
-    if model.split("/")[-1].lower() == "minimax-m3":
-        return 1_000_000
-
     try:
         info = litellm.get_model_info(model)
         ctx = info.get("max_input_tokens") or info.get("max_tokens") or 0
@@ -220,20 +191,20 @@ def get_model_context_window(model: str, provider: str = None) -> int:
     except Exception:
         pass
 
-    if provider:
-        try:
-            prefixed = f"{provider}/{model}"
-            info = litellm.get_model_info(prefixed)
-            ctx = info.get("max_input_tokens") or info.get("max_tokens") or 0
-            if ctx > 0:
-                return ctx
-        except Exception:
-            pass
-
     resolved_provider = provider
     if not resolved_provider:
         try:
             resolved_provider = lookup_provider(model)
+        except Exception:
+            pass
+
+    if resolved_provider:
+        try:
+            prefixed = f"{resolved_provider}/{model}"
+            info = litellm.get_model_info(prefixed)
+            ctx = info.get("max_input_tokens") or info.get("max_tokens") or 0
+            if ctx > 0:
+                return ctx
         except Exception:
             pass
 
