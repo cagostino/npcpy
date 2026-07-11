@@ -3756,58 +3756,12 @@ def get_attachment_response():
         "conversationId": conversation_id,
         "messages": messages,
     })
-IMAGE_MODELS = {
+# Minimal fallback for providers litellm doesn't cover with image model lists.
+# These are suggestions, not gates — users can always pass a custom model ID.
+_IMAGE_MODELS_FALLBACK = {
     "ollama": [
         {"value": "x/z-image-turbo", "display_name": "Z-Image Turbo (6B)"},
         {"value": "x/flux2-klein", "display_name": "FLUX.2 Klein (4B)"},
-        {"value": "x/flux2-klein:9b", "display_name": "FLUX.2 Klein (9B)"},
-    ],
-    "diffusers": [
-        {"value": "black-forest-labs/FLUX.1-schnell", "display_name": "FLUX.1 Schnell"},
-        {"value": "stabilityai/stable-diffusion-xl-base-1.0", "display_name": "SDXL Base 1.0"},
-    ],
-    "openai": [
-        {"value": "gpt-image-1.5", "display_name": "GPT-Image-1.5"},
-        {"value": "gpt-image-1", "display_name": "GPT-Image-1"},
-        {"value": "dall-e-3", "display_name": "DALL-E 3"},
-        {"value": "dall-e-2", "display_name": "DALL-E 2"},
-    ],
-    "gemini": [
-        {"value": "gemini-3.1-flash-image-preview", "display_name": "Gemini 3.1 Flash Image"},
-        {"value": "gemini-3-pro-image-preview", "display_name": "Gemini 3 Pro Image"},
-        {"value": "gemini-2.5-flash-image", "display_name": "Gemini 2.5 Flash Image"},
-        {"value": "imagen-3.0-generate-002", "display_name": "Imagen 3.0 Generate (Preview)"},
-    ],
-    "stability": [
-        {"value": "stable-diffusion-xl-1024-v1-0", "display_name": "SDXL 1.0"},
-        {"value": "stable-diffusion-v1-6", "display_name": "SD 1.6"},
-        {"value": "stable-image-core", "display_name": "Stable Image Core"},
-        {"value": "stable-image-ultra", "display_name": "Stable Image Ultra"},
-    ],
-    "replicate": [
-        {"value": "stability-ai/sdxl", "display_name": "SDXL (Replicate)"},
-        {"value": "black-forest-labs/flux-schnell", "display_name": "FLUX Schnell"},
-        {"value": "black-forest-labs/flux-dev", "display_name": "FLUX Dev"},
-        {"value": "black-forest-labs/flux-pro", "display_name": "FLUX Pro"},
-    ],
-    "fal": [
-        {"value": "fal-ai/flux/schnell", "display_name": "FLUX Schnell"},
-        {"value": "fal-ai/flux/dev", "display_name": "FLUX Dev"},
-        {"value": "fal-ai/flux-pro", "display_name": "FLUX Pro"},
-        {"value": "fal-ai/stable-diffusion-v3-medium", "display_name": "SD3 Medium"},
-    ],
-    "together": [
-        {"value": "stabilityai/stable-diffusion-xl-base-1.0", "display_name": "SDXL Base"},
-        {"value": "black-forest-labs/FLUX.1-schnell", "display_name": "FLUX.1 Schnell"},
-        {"value": "black-forest-labs/FLUX.1.1-pro", "display_name": "FLUX 1.1 Pro"},
-    ],
-    "fireworks": [
-        {"value": "stable-diffusion-xl-1024-v1-0", "display_name": "SDXL 1.0"},
-        {"value": "playground-v2-1024px-aesthetic", "display_name": "Playground v2"},
-    ],
-    "deepinfra": [
-        {"value": "stability-ai/sdxl", "display_name": "SDXL"},
-        {"value": "black-forest-labs/FLUX-1-schnell", "display_name": "FLUX Schnell"},
     ],
     "bfl": [
         {"value": "flux-pro-1.1", "display_name": "FLUX Pro 1.1"},
@@ -3826,6 +3780,74 @@ IMAGE_MODELS = {
         {"value": "ideogram-v2-turbo", "display_name": "Ideogram v2 Turbo"},
     ],
 }
+
+# Map provider key -> (litellm_attr_name, filter_func)
+# If attr_name is None, the provider has no litellm image coverage and falls back to hardcoded.
+_LITELLM_IMAGE_PROVIDER_ATTRS = {
+    "gemini": ("gemini_models", lambda m: any(k in m.lower() for k in ["image", "imagen", "nano", "banana"]) and "veo" not in m.lower()),
+    "openai": ("openai_image_generation_models", None),
+    "stability": ("stability_models", None),
+    "fal": ("fal_ai_models", None),
+    "replicate": (None, None),
+    "together": (None, None),
+    "fireworks": (None, None),
+    "deepinfra": (None, None),
+    "ollama": (None, None),
+}
+
+_LOCAL_DIFFUSERS_CACHE_PATH = Path.home() / ".npcsh" / "image_models_cache.json"
+
+
+def _scan_hf_diffusers_cache():
+    """Scan HuggingFace cache for diffusers models (identified by model_index.json)."""
+    cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+    if not cache_dir.exists():
+        return []
+    models = []
+    for entry in cache_dir.iterdir():
+        if not entry.is_dir() or not entry.name.startswith("models--"):
+            continue
+        model_id = entry.name.replace("models--", "").replace("--", "/")
+        found = False
+        snaps = entry / "snapshots"
+        if snaps.exists():
+            for snap in snaps.iterdir():
+                if snap.is_dir() and (snap / "model_index.json").exists():
+                    found = True
+                    break
+        if found:
+            models.append({
+                "value": model_id,
+                "provider": "diffusers",
+                "display_name": f"{model_id} | diffusers (HF cache)",
+            })
+    return models
+
+
+def _get_cached_local_diffusers_models(force_refresh=False):
+    """Return cached local diffusers models; refresh if stale or forced."""
+    if not force_refresh and _LOCAL_DIFFUSERS_CACHE_PATH.exists():
+        try:
+            data = json.loads(_LOCAL_DIFFUSERS_CACHE_PATH.read_text())
+            cached_at = datetime.datetime.fromisoformat(data.get("cached_at", "1970-01-01"))
+            if (datetime.datetime.now() - cached_at).days < 1:
+                return data.get("models", [])
+        except Exception:
+            pass
+    models = _scan_hf_diffusers_cache()
+    try:
+        _LOCAL_DIFFUSERS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _LOCAL_DIFFUSERS_CACHE_PATH.write_text(
+            json.dumps({
+                "cached_at": datetime.datetime.now().isoformat(),
+                "models": models,
+            }, indent=2)
+        )
+    except Exception as e:
+        print(f"Warning: could not write local diffusers cache: {e}")
+    return models
+
+
 IMAGE_PROVIDER_API_KEYS = {
     "openai": "OPENAI_API_KEY",
     "gemini": "GEMINI_API_KEY",
@@ -3876,43 +3898,84 @@ def _get_finetuned_models_internal(current_path=None):
     return {"models": finetuned_models, "error": None}
 def get_available_image_models(current_path=None):
     """
-    Retrieves available image generation models based on environment variables
-    and predefined configurations, including locally fine-tuned Diffusers models.
+    Retrieves available image generation models from litellm, local HF cache,
+    fine-tuned models, and minimal fallbacks.  No hardcoded allowlist.
     """
     if current_path:
-        load_project_env(current_path) 
+        load_project_env(current_path)
     all_image_models = []
+
+    # 1) Configured custom model
     cfg_image_model = app.config.get('IMAGE_MODEL')
     cfg_image_provider = app.config.get('IMAGE_PROVIDER')
     if cfg_image_model and cfg_image_provider:
         all_image_models.append({
             "value": cfg_image_model,
             "provider": cfg_image_provider,
-            "display_name": f"{cfg_image_model} | {cfg_image_provider} (Configured)"
+            "display_name": f"{cfg_image_model} | {cfg_image_provider} (Configured)",
         })
-    for provider_key, models_list in IMAGE_MODELS.items():
-        if provider_key == "diffusers":
-            all_image_models.extend([
-                {**model, "provider": provider_key, "display_name": f"{model['display_name']} | {provider_key}"}
-                for model in models_list
-            ])
-        else:
-            api_key_env = IMAGE_PROVIDER_API_KEYS.get(provider_key)
-            if api_key_env and os.environ.get(api_key_env):
-                all_image_models.extend([
-                    {**model, "provider": provider_key, "display_name": f"{model['display_name']} | {provider_key}"}
-                    for model in models_list
-                ])
+
+    # 2) litellm-driven providers + fallbacks + custom passthrough
+    try:
+        import litellm
+    except Exception:
+        litellm = None
+
+    for provider_key, api_key_env in IMAGE_PROVIDER_API_KEYS.items():
+        if not os.environ.get(api_key_env):
+            continue
+
+        # litellm lookup
+        attr_name, filter_fn = _LITELLM_IMAGE_PROVIDER_ATTRS.get(provider_key, (None, None))
+        if litellm and attr_name:
+            try:
+                model_set = getattr(litellm, attr_name, None) or set()
+                for model_id in sorted(model_set):
+                    if filter_fn and not filter_fn(model_id):
+                        continue
+                    # Strip provider prefix (e.g. gemini/gemini-3-pro-image -> gemini-3-pro-image)
+                    clean_id = model_id.split("/")[-1] if "/" in model_id else model_id
+                    all_image_models.append({
+                        "value": clean_id,
+                        "provider": provider_key,
+                        "display_name": f"{clean_id} | {provider_key}",
+                    })
+            except Exception as e:
+                print(f"Warning: litellm lookup failed for {provider_key}: {e}")
+
+        # Minimal hardcoded fallback for providers litellm doesn't cover
+        fallback = _IMAGE_MODELS_FALLBACK.get(provider_key, [])
+        for model in fallback:
+            all_image_models.append({
+                **model,
+                "provider": provider_key,
+                "display_name": f"{model['display_name']} | {provider_key}",
+            })
+
+        # Always expose a custom passthrough so users aren't gated by discovery
+        all_image_models.append({
+            "value": "__custom__",
+            "provider": provider_key,
+            "display_name": f"Custom {provider_key} model",
+        })
+
+    # 3) Local diffusers from HF cache (cached in ~/.npcsh)
+    try:
+        all_image_models.extend(_get_cached_local_diffusers_models())
+    except Exception as e:
+        print(f"Warning: local diffusers cache lookup failed: {e}")
+
+    # 4) Fine-tuned project models
     try:
         finetuned_data_result = _get_finetuned_models_internal(current_path)
         if finetuned_data_result and finetuned_data_result.get("models"):
             all_image_models.extend(finetuned_data_result["models"])
-        else:
-            print(f"No fine-tuned models returned by internal helper or an error occurred internally.")
-            if finetuned_data_result.get("error"):
-                print(f"Internal error in _get_finetuned_models_internal: {finetuned_data_result['error']}")
+        elif finetuned_data_result.get("error"):
+            print(f"Internal error in _get_finetuned_models_internal: {finetuned_data_result['error']}")
     except Exception as e:
         print(f"Error calling _get_finetuned_models_internal: {e}")
+
+    # 5) Deduplicate
     seen_models = set()
     unique_models = []
     for model_entry in all_image_models:
