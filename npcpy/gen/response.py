@@ -358,7 +358,15 @@ def get_ollama_response(
     except Exception:
         pass
 
-    client = ollama.Client()
+    api_key = kwargs.pop("api_key", None) or os.environ.get("OLLAMA_API_KEY")
+    api_url = kwargs.pop("api_url", None) or os.environ.get("OLLAMA_HOST")
+    client_kwargs = {}
+    if api_url:
+        client_kwargs["host"] = api_url
+    if api_key:
+        client_kwargs["headers"] = {"Authorization": f"Bearer {api_key}"}
+
+    client = ollama.Client(**client_kwargs)
 
     options = {}
 
@@ -892,6 +900,91 @@ Do not include any additional markdown formatting or leading ```json tags in you
 
     return result
 
+def _parse_mlx_tool_calls(text, tools=None):
+    """Parse structured tool-call blocks a local MLX model (Qwen3 / Qwen2.5
+    chat templates) emits, into the call-dict shape process_tool_calls expects.
+
+    Tokens are built from chr() so this source never hardcodes the delimiters.
+    Recognizes tool_call and function=NAME blocks plus fenced json; falls back
+    to a verbatim tool-name scan (empty args) so a small model that only
+    mentions a tool still yields a tool_call for the agent loop to execute.
+    """
+    import re
+    LT, GT = chr(60), chr(62)
+    tc_open = LT + "tool_call" + GT
+    tc_close = LT + "/tool_call" + GT
+    fn_close = LT + "/function" + GT
+
+    def _make(name, args):
+        if not name:
+            return None
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                args = {"raw_arguments": args}
+        if not isinstance(args, dict):
+            args = {"value": args}
+        func = {}
+        func["name"] = name
+        func["arguments"] = json.dumps(args)
+        call = {"id": str(uuid.uuid4()), "type": "function", "function": func}
+        return call
+
+    calls = []
+    pat = re.escape(tc_open) + r"\s*(\{.*?\})\s*" + re.escape(tc_close)
+    for m in re.finditer(pat, text, re.DOTALL):
+        body = m.group(1).strip()
+        body = re.sub(r"^```(?:json|tool_call)?\s*", "", body).strip()
+        body = re.sub(r"\s*```$", "", body).strip()
+        try:
+            obj = json.loads(body)
+        except json.JSONDecodeError:
+            continue
+        calls.append(_make(obj.get("name"), obj.get("arguments", {})))
+
+    if not calls:
+        pat2 = re.escape(LT) + r"function=([^>" + re.escape(GT) + r"]+)>\s*(.*?)\s*" + re.escape(fn_close)
+        param_open = LT + "parameter="
+        param_close = LT + "/parameter" + GT
+        pat_param = re.escape(param_open) + r"([^>" + re.escape(GT) + r"]+)>(.*?)" + re.escape(param_close)
+        for m in re.finditer(pat2, text, re.DOTALL):
+            body = m.group(2).strip()
+            args = {}
+            params = list(re.finditer(pat_param, body, re.DOTALL))
+            if params:
+                for pm in params:
+                    key = pm.group(1).strip()
+                    val = pm.group(2).strip()
+                    try:
+                        args[key] = json.loads(val)
+                    except json.JSONDecodeError:
+                        args[key] = val
+            else:
+                try:
+                    args = json.loads(body)
+                except json.JSONDecodeError:
+                    args = {}
+            calls.append(_make(m.group(1).strip(), args))
+
+    if not calls:
+        for m in re.finditer(r"```(?:tool_call|json)?\s*(\{.*?\})\s*```", text, re.DOTALL):
+            try:
+                obj = json.loads(m.group(1))
+            except json.JSONDecodeError:
+                continue
+            if "name" in obj:
+                calls.append(_make(obj["name"], obj.get("arguments", {})))
+
+    if not calls and tools:
+        for tool in tools:
+            tool_name = tool.get("function", {}).get("name", "")
+            if tool_name and tool_name in text:
+                calls.append(_make(tool_name, {}))
+
+    return [c for c in calls if c]
+
+
 def get_mlx_response(
     prompt: str = None,
     model: str = None,
@@ -967,9 +1060,15 @@ Do not include any additional markdown formatting or leading ```json tags in you
         else:
             mlx_model, tokenizer = mlx_load(base_model_id)
 
-        chat_text = tokenizer.apply_chat_template(
-            result["messages"], tokenize=False, add_generation_prompt=True
-        )
+        chat_kwargs = {"tokenize": False, "add_generation_prompt": True}
+        if tools:
+            chat_kwargs["tools"] = tools
+        try:
+            chat_text = tokenizer.apply_chat_template(result["messages"], **chat_kwargs)
+        except (TypeError, ValueError):
+            chat_text = tokenizer.apply_chat_template(
+                result["messages"], tokenize=False, add_generation_prompt=True
+            )
 
         max_tokens = kwargs.get("max_tokens", kwargs.get("max_new_tokens", 512))
         temperature = kwargs.get("temperature", 0.7)
@@ -984,17 +1083,30 @@ Do not include any additional markdown formatting or leading ```json tags in you
             text = text[len(chat_text):]
         response_content = text.strip()
 
-        result["response"] = response_content
-        result["raw_response"] = response_content
-        result["messages"].append({"role": "assistant", "content": response_content})
+        tool_calls = _parse_mlx_tool_calls(response_content, tools) if tools else []
 
-        if format == "json":
-            try:
-                if response_content.startswith("```json"):
-                    response_content = response_content.replace("```json", "").replace("```", "").strip()
-                result["response"] = json.loads(response_content)
-            except json.JSONDecodeError:
-                result["error"] = f"Invalid JSON response: {response_content}"
+        if tool_calls:
+            result["tool_calls"] = tool_calls
+            result["response"] = response_content
+            result["raw_response"] = response_content
+            result["messages"].append({"role": "assistant", "content": response_content})
+            if auto_process_tool_calls and tool_map:
+                result = process_tool_calls(
+                    result, tool_map, model, "mlx",
+                    result["messages"], tools=tools,
+                )
+        else:
+            result["response"] = response_content
+            result["raw_response"] = response_content
+            result["messages"].append({"role": "assistant", "content": response_content})
+            if format == "json":
+                cleaned = response_content
+                if cleaned.startswith("```json"):
+                    cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+                try:
+                    result["response"] = json.loads(cleaned)
+                except json.JSONDecodeError:
+                    result["error"] = f"Invalid JSON response: {response_content}"
 
     except Exception as e:
         logger.error(f"MLX inference error: {e}")
