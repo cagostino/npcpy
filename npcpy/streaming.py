@@ -319,6 +319,7 @@ def execute_tool(tool_name: str, tool_args: dict, tool_id: str,
             })
 
         tool_content = ""
+        stop_requested = False
         if executor['type'] == 'jinx':
             jinx_obj = executor['jinx']
             try:
@@ -327,6 +328,7 @@ def execute_tool(tool_name: str, tool_args: dict, tool_id: str,
                     npc=npc,
                 )
                 tool_content = str(jinx_ctx.get('output', '')) if isinstance(jinx_ctx, dict) else str(jinx_ctx)
+                stop_requested = bool(isinstance(jinx_ctx, dict) and jinx_ctx.get('stop_requested'))
             except Exception as e:
                 tool_content = "Jinx execution error: {}".format(str(e))
 
@@ -346,7 +348,8 @@ def execute_tool(tool_name: str, tool_args: dict, tool_id: str,
             tool_content = "Unknown executor type: {}".format(executor['type'])
 
         return StreamEvent('tool_result', {
-            'name': tool_name, 'id': tool_id, 'result': tool_content, 'args': tool_args
+            'name': tool_name, 'id': tool_id, 'result': tool_content, 'args': tool_args,
+            'stop_requested': stop_requested
         })
 
     except Exception as e:
@@ -506,8 +509,12 @@ def create_tool_agent_stream(config: StreamConfig,
         agent_context = "The user's working directory is {}".format(config.current_path)
 
     iteration = 0
+    stop_requested = False
     while iteration < config.max_tool_iterations:
         iteration += 1
+
+        if stop_requested:
+            break
 
         try:
             llm_response = get_llm_response(
@@ -627,6 +634,11 @@ def create_tool_agent_stream(config: StreamConfig,
 
             result_event = execute_tool(tool_name, tool_args, tool_id, tool_executors, npc=npc)
             yield result_event
+
+            if result_event.data.get('stop_requested'):
+                stop_requested = True
+                prompt = ""
+                break
 
             tool_content = result_event.data.get('result', result_event.data.get('error', ''))
             messages.append({

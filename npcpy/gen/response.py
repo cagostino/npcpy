@@ -358,7 +358,15 @@ def get_ollama_response(
     except Exception:
         pass
 
-    client = ollama.Client()
+    api_key = kwargs.pop("api_key", None) or os.environ.get("OLLAMA_API_KEY")
+    api_url = kwargs.pop("api_url", None) or os.environ.get("OLLAMA_HOST")
+    client_kwargs = {}
+    if api_url:
+        client_kwargs["host"] = api_url
+    if api_key:
+        client_kwargs["headers"] = {"Authorization": f"Bearer {api_key}"}
+
+    client = ollama.Client(**client_kwargs)
 
     options = {}
 
@@ -891,6 +899,222 @@ Do not include any additional markdown formatting or leading ```json tags in you
         result["response"] = ""
 
     return result
+
+def _parse_mlx_tool_calls(text, tools=None):
+    """Parse structured tool-call blocks a local MLX model (Qwen3 / Qwen2.5
+    chat templates) emits, into the call-dict shape process_tool_calls expects.
+
+    Tokens are built from chr() so this source never hardcodes the delimiters.
+    Recognizes tool_call and function=NAME blocks plus fenced json; falls back
+    to a verbatim tool-name scan (empty args) so a small model that only
+    mentions a tool still yields a tool_call for the agent loop to execute.
+    """
+    import re
+    LT, GT = chr(60), chr(62)
+    tc_open = LT + "tool_call" + GT
+    tc_close = LT + "/tool_call" + GT
+    fn_close = LT + "/function" + GT
+
+    def _make(name, args):
+        if not name:
+            return None
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except json.JSONDecodeError:
+                args = {"raw_arguments": args}
+        if not isinstance(args, dict):
+            args = {"value": args}
+        func = {}
+        func["name"] = name
+        func["arguments"] = json.dumps(args)
+        call = {"id": str(uuid.uuid4()), "type": "function", "function": func}
+        return call
+
+    calls = []
+    pat = re.escape(tc_open) + r"\s*(\{.*?\})\s*" + re.escape(tc_close)
+    for m in re.finditer(pat, text, re.DOTALL):
+        body = m.group(1).strip()
+        body = re.sub(r"^```(?:json|tool_call)?\s*", "", body).strip()
+        body = re.sub(r"\s*```$", "", body).strip()
+        try:
+            obj = json.loads(body)
+        except json.JSONDecodeError:
+            continue
+        calls.append(_make(obj.get("name"), obj.get("arguments", {})))
+
+    if not calls:
+        pat2 = re.escape(LT) + r"function=([^>" + re.escape(GT) + r"]+)>\s*(.*?)\s*" + re.escape(fn_close)
+        param_open = LT + "parameter="
+        param_close = LT + "/parameter" + GT
+        pat_param = re.escape(param_open) + r"([^>" + re.escape(GT) + r"]+)>(.*?)" + re.escape(param_close)
+        for m in re.finditer(pat2, text, re.DOTALL):
+            body = m.group(2).strip()
+            args = {}
+            params = list(re.finditer(pat_param, body, re.DOTALL))
+            if params:
+                for pm in params:
+                    key = pm.group(1).strip()
+                    val = pm.group(2).strip()
+                    try:
+                        args[key] = json.loads(val)
+                    except json.JSONDecodeError:
+                        args[key] = val
+            else:
+                try:
+                    args = json.loads(body)
+                except json.JSONDecodeError:
+                    args = {}
+            calls.append(_make(m.group(1).strip(), args))
+
+    if not calls:
+        for m in re.finditer(r"```(?:tool_call|json)?\s*(\{.*?\})\s*```", text, re.DOTALL):
+            try:
+                obj = json.loads(m.group(1))
+            except json.JSONDecodeError:
+                continue
+            if "name" in obj:
+                calls.append(_make(obj["name"], obj.get("arguments", {})))
+
+    if not calls and tools:
+        for tool in tools:
+            tool_name = tool.get("function", {}).get("name", "")
+            if tool_name and tool_name in text:
+                calls.append(_make(tool_name, {}))
+
+    return [c for c in calls if c]
+
+
+def get_mlx_response(
+    prompt: str = None,
+    model: str = None,
+    tools: list = None,
+    tool_map: Dict = None,
+    format: Union[str, BaseModel] = None,
+    messages: List[Dict[str, str]] = None,
+    stream: bool = False,
+    auto_process_tool_calls: bool = False,
+    **kwargs,
+) -> Dict[str, Any]:
+    """Generate a response with a local MLX model, optionally with a trained
+    LoRA adapter. npcy owns the mlx_lm import here — callers just pass
+    provider="mlx" and model=<mlx-community model name | adapter dir>.
+
+    An adapter dir must contain adapter_config.json with a "model" field naming
+    the mlx-community base and "fine_tune_type": "lora" (the format written by
+    npcpy.ft's MLX trainers).
+    """
+    result = {
+        "response": None,
+        "messages": messages.copy() if messages else [],
+        "raw_response": None,
+        "tool_calls": [],
+        "tool_results": [],
+    }
+
+    try:
+        from mlx_lm import load as mlx_load, generate as mlx_generate
+        from mlx_lm.sample_utils import make_sampler
+    except ImportError as e:
+        return {
+            "response": "",
+            "messages": messages or [],
+            "error": f"MLX backend not installed: pip install mlx mlx-lm. Error: {e}",
+        }
+
+    model_arg = os.path.expanduser(str(model)) if model else ""
+    adapter_config_path = os.path.join(model_arg, "adapter_config.json")
+    base_model_id = model
+    adapter_path = None
+    if os.path.isdir(model_arg) and os.path.exists(adapter_config_path):
+        try:
+            with open(adapter_config_path, "r") as f:
+                adapter_config = json.load(f)
+            base_model_id = adapter_config.get("model") or adapter_config.get("base_model_name_or_path")
+            if adapter_config.get("fine_tune_type") == "lora" or "lora_parameters" in adapter_config:
+                adapter_path = model_arg
+        except Exception as e:
+            return {"response": "", "messages": messages or [],
+                    "error": f"Failed to read adapter config: {e}"}
+        if not base_model_id:
+            return {"response": "", "messages": messages or [],
+                    "error": "adapter_config.json missing base model ('model'/'base_model_name_or_path')"}
+
+    if prompt:
+        if result["messages"] and result["messages"][-1].get("role") == "user":
+            result["messages"][-1]["content"] = prompt
+        else:
+            result["messages"].append({"role": "user", "content": prompt})
+
+    if format == "json":
+        json_instruction = """If you are returning a json object, begin directly with the opening {.
+Do not include any additional markdown formatting or leading ```json tags in your response."""
+        if result["messages"] and result["messages"][-1]["role"] == "user":
+            result["messages"][-1]["content"] += "\n" + json_instruction
+
+    try:
+        logger.info(f"Loading MLX model: {base_model_id}"
+                    + (f" + adapter {adapter_path}" if adapter_path else ""))
+        if adapter_path:
+            mlx_model, tokenizer = mlx_load(base_model_id, adapter_path=adapter_path)
+        else:
+            mlx_model, tokenizer = mlx_load(base_model_id)
+
+        chat_kwargs = {"tokenize": False, "add_generation_prompt": True}
+        if tools:
+            chat_kwargs["tools"] = tools
+        try:
+            chat_text = tokenizer.apply_chat_template(result["messages"], **chat_kwargs)
+        except (TypeError, ValueError):
+            chat_text = tokenizer.apply_chat_template(
+                result["messages"], tokenize=False, add_generation_prompt=True
+            )
+
+        max_tokens = kwargs.get("max_tokens", kwargs.get("max_new_tokens", 512))
+        temperature = kwargs.get("temperature", 0.7)
+        top_p = kwargs.get("top_p", 0.9)
+        sampler = make_sampler(temp=temperature, top_p=top_p)
+        out = mlx_generate(
+            mlx_model, tokenizer, prompt=chat_text,
+            max_tokens=max_tokens, sampler=sampler, verbose=False,
+        )
+        text = out if isinstance(out, str) else getattr(out, "text", str(out))
+        if text.startswith(chat_text):
+            text = text[len(chat_text):]
+        response_content = text.strip()
+
+        tool_calls = _parse_mlx_tool_calls(response_content, tools) if tools else []
+
+        if tool_calls:
+            result["tool_calls"] = tool_calls
+            result["response"] = response_content
+            result["raw_response"] = response_content
+            result["messages"].append({"role": "assistant", "content": response_content})
+            if auto_process_tool_calls and tool_map:
+                result = process_tool_calls(
+                    result, tool_map, model, "mlx",
+                    result["messages"], tools=tools,
+                )
+        else:
+            result["response"] = response_content
+            result["raw_response"] = response_content
+            result["messages"].append({"role": "assistant", "content": response_content})
+            if format == "json":
+                cleaned = response_content
+                if cleaned.startswith("```json"):
+                    cleaned = cleaned.replace("```json", "").replace("```", "").strip()
+                try:
+                    result["response"] = json.loads(cleaned)
+                except json.JSONDecodeError:
+                    result["error"] = f"Invalid JSON response: {response_content}"
+
+    except Exception as e:
+        logger.error(f"MLX inference error: {e}")
+        result["error"] = f"MLX inference error: {str(e)}"
+        result["response"] = ""
+
+    return result
+
 
 def get_llamacpp_response(
     prompt: str = None,
@@ -2166,6 +2390,18 @@ def get_litellm_response(
         if result.get('error'):
             print(f"🔧 LoRA error: {result.get('error')}")
         return result
+    elif provider == 'mlx':
+        return get_mlx_response(
+            prompt=prompt,
+            model=model,
+            tools=tools,
+            tool_map=tool_map,
+            format=format,
+            messages=messages,
+            stream=stream,
+            auto_process_tool_calls=auto_process_tool_calls,
+            **kwargs
+        )
     elif provider == 'llamacpp':
         return get_llamacpp_response(
             prompt,
