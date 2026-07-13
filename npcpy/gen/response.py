@@ -892,6 +892,118 @@ Do not include any additional markdown formatting or leading ```json tags in you
 
     return result
 
+def get_mlx_response(
+    prompt: str = None,
+    model: str = None,
+    tools: list = None,
+    tool_map: Dict = None,
+    format: Union[str, BaseModel] = None,
+    messages: List[Dict[str, str]] = None,
+    stream: bool = False,
+    auto_process_tool_calls: bool = False,
+    **kwargs,
+) -> Dict[str, Any]:
+    """Generate a response with a local MLX model, optionally with a trained
+    LoRA adapter. npcy owns the mlx_lm import here — callers just pass
+    provider="mlx" and model=<mlx-community model name | adapter dir>.
+
+    An adapter dir must contain adapter_config.json with a "model" field naming
+    the mlx-community base and "fine_tune_type": "lora" (the format written by
+    npcpy.ft's MLX trainers).
+    """
+    result = {
+        "response": None,
+        "messages": messages.copy() if messages else [],
+        "raw_response": None,
+        "tool_calls": [],
+        "tool_results": [],
+    }
+
+    try:
+        from mlx_lm import load as mlx_load, generate as mlx_generate
+        from mlx_lm.sample_utils import make_sampler
+    except ImportError as e:
+        return {
+            "response": "",
+            "messages": messages or [],
+            "error": f"MLX backend not installed: pip install mlx mlx-lm. Error: {e}",
+        }
+
+    model_arg = os.path.expanduser(str(model)) if model else ""
+    adapter_config_path = os.path.join(model_arg, "adapter_config.json")
+    base_model_id = model
+    adapter_path = None
+    if os.path.isdir(model_arg) and os.path.exists(adapter_config_path):
+        try:
+            with open(adapter_config_path, "r") as f:
+                adapter_config = json.load(f)
+            base_model_id = adapter_config.get("model") or adapter_config.get("base_model_name_or_path")
+            if adapter_config.get("fine_tune_type") == "lora" or "lora_parameters" in adapter_config:
+                adapter_path = model_arg
+        except Exception as e:
+            return {"response": "", "messages": messages or [],
+                    "error": f"Failed to read adapter config: {e}"}
+        if not base_model_id:
+            return {"response": "", "messages": messages or [],
+                    "error": "adapter_config.json missing base model ('model'/'base_model_name_or_path')"}
+
+    if prompt:
+        if result["messages"] and result["messages"][-1].get("role") == "user":
+            result["messages"][-1]["content"] = prompt
+        else:
+            result["messages"].append({"role": "user", "content": prompt})
+
+    if format == "json":
+        json_instruction = """If you are returning a json object, begin directly with the opening {.
+Do not include any additional markdown formatting or leading ```json tags in your response."""
+        if result["messages"] and result["messages"][-1]["role"] == "user":
+            result["messages"][-1]["content"] += "\n" + json_instruction
+
+    try:
+        logger.info(f"Loading MLX model: {base_model_id}"
+                    + (f" + adapter {adapter_path}" if adapter_path else ""))
+        if adapter_path:
+            mlx_model, tokenizer = mlx_load(base_model_id, adapter_path=adapter_path)
+        else:
+            mlx_model, tokenizer = mlx_load(base_model_id)
+
+        chat_text = tokenizer.apply_chat_template(
+            result["messages"], tokenize=False, add_generation_prompt=True
+        )
+
+        max_tokens = kwargs.get("max_tokens", kwargs.get("max_new_tokens", 512))
+        temperature = kwargs.get("temperature", 0.7)
+        top_p = kwargs.get("top_p", 0.9)
+        sampler = make_sampler(temp=temperature, top_p=top_p)
+        out = mlx_generate(
+            mlx_model, tokenizer, prompt=chat_text,
+            max_tokens=max_tokens, sampler=sampler, verbose=False,
+        )
+        text = out if isinstance(out, str) else getattr(out, "text", str(out))
+        if text.startswith(chat_text):
+            text = text[len(chat_text):]
+        response_content = text.strip()
+
+        result["response"] = response_content
+        result["raw_response"] = response_content
+        result["messages"].append({"role": "assistant", "content": response_content})
+
+        if format == "json":
+            try:
+                if response_content.startswith("```json"):
+                    response_content = response_content.replace("```json", "").replace("```", "").strip()
+                result["response"] = json.loads(response_content)
+            except json.JSONDecodeError:
+                result["error"] = f"Invalid JSON response: {response_content}"
+
+    except Exception as e:
+        logger.error(f"MLX inference error: {e}")
+        result["error"] = f"MLX inference error: {str(e)}"
+        result["response"] = ""
+
+    return result
+
+
 def get_llamacpp_response(
     prompt: str = None,
     model: str = None,
@@ -2166,6 +2278,18 @@ def get_litellm_response(
         if result.get('error'):
             print(f"🔧 LoRA error: {result.get('error')}")
         return result
+    elif provider == 'mlx':
+        return get_mlx_response(
+            prompt=prompt,
+            model=model,
+            tools=tools,
+            tool_map=tool_map,
+            format=format,
+            messages=messages,
+            stream=stream,
+            auto_process_tool_calls=auto_process_tool_calls,
+            **kwargs
+        )
     elif provider == 'llamacpp':
         return get_llamacpp_response(
             prompt,
