@@ -61,6 +61,156 @@ GEMINI_API_KEY=test-gemini-key
             shutil.rmtree(temp_dir)
 
 
+class TestMiniMaxProvider:
+    """Test MiniMax model registration and compatible API routing."""
+
+    def test_target_models_use_minimax_provider(self):
+        """Both target model IDs should be registered with MiniMax."""
+        from npcpy.npc_sysenv import MINIMAX_MODELS, lookup_provider
+
+        assert MINIMAX_MODELS == frozenset({"MiniMax-M3", "MiniMax-M2.7"})
+        assert lookup_provider("MiniMax-M3") == "minimax"
+        assert lookup_provider("MiniMax-M2.7") == "minimax"
+
+    @pytest.mark.parametrize(
+        ("api_url", "expected_base", "expected_model"),
+        [
+            (None, "https://api.minimax.io/v1", "openai/MiniMax-M2.7"),
+            (
+                "https://api.minimaxi.com/v1",
+                "https://api.minimaxi.com/v1",
+                "openai/MiniMax-M2.7",
+            ),
+            (
+                "https://api.minimax.io/anthropic",
+                "https://api.minimax.io/anthropic",
+                "anthropic/MiniMax-M2.7",
+            ),
+            (
+                "https://api.minimaxi.com/anthropic",
+                "https://api.minimaxi.com/anthropic",
+                "anthropic/MiniMax-M2.7",
+            ),
+        ],
+    )
+    def test_compatible_api_routing(
+        self, monkeypatch, api_url, expected_base, expected_model
+    ):
+        """The existing API URL setting should select region and protocol."""
+        from types import SimpleNamespace
+        from npcpy.gen import response as response_module
+
+        captured = {}
+
+        def fake_completion(**kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="ok", tool_calls=None)
+                    )
+                ]
+            )
+
+        monkeypatch.setattr(response_module, "completion", fake_completion)
+        monkeypatch.delenv("MINIMAX_API_URL", raising=False)
+        monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+
+        result = response_module.get_litellm_response(
+            prompt="Hello",
+            model="MiniMax-M2.7",
+            provider="minimax",
+            api_url=api_url,
+        )
+
+        assert result["response"] == "ok"
+        assert captured["model"] == expected_model
+        assert captured["api_base"] == expected_base
+        assert captured["api_key"] == "test-key"
+
+    def test_compatible_request_paths(self):
+        """LiteLLM should append each protocol's request path to its Base URL."""
+        import json
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+        from npcpy.gen import response as response_module
+
+        class CaptureHandler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.server.paths.append(self.path)
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                if self.path.endswith("/chat/completions"):
+                    payload = {
+                        "id": "chatcmpl-test",
+                        "object": "chat.completion",
+                        "created": 0,
+                        "model": "MiniMax-M3",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "message": {"role": "assistant", "content": "ok"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    }
+                else:
+                    payload = {
+                        "id": "msg_test",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "MiniMax-M2.7",
+                        "content": [{"type": "text", "text": "ok"}],
+                        "stop_reason": "end_turn",
+                        "stop_sequence": None,
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                    }
+                body = json.dumps(payload).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format, *args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), CaptureHandler)
+        server.paths = []
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host = f"http://127.0.0.1:{server.server_port}"
+
+        try:
+            openai_result = response_module.get_litellm_response(
+                prompt="Hello",
+                model="MiniMax-M3",
+                provider="minimax",
+                api_url=f"{host}/v1",
+                api_key="test-key",
+                timeout=5,
+            )
+            anthropic_result = response_module.get_litellm_response(
+                prompt="Hello",
+                model="MiniMax-M2.7",
+                provider="minimax",
+                api_url=f"{host}/anthropic",
+                api_key="test-key",
+                timeout=5,
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        assert openai_result["response"] == "ok"
+        assert anthropic_result["response"] == "ok"
+        assert server.paths == [
+            "/v1/chat/completions",
+            "/anthropic/v1/messages",
+        ]
+
+
 class TestPlatformDetection:
     """Test platform detection variables."""
 

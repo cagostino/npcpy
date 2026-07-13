@@ -16,6 +16,7 @@ import json
 import requests
 ON_WINDOWS = platform.system() == "Windows"
 ON_MACOS = platform.system() == "Darwin"
+MINIMAX_MODELS = frozenset({"MiniMax-M3", "MiniMax-M2.7"})
 
 def get_data_dir() -> str:
     """Get the data directory."""
@@ -147,7 +148,7 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
 
         provider_model_attrs = {
             "anthropic": ("ANTHROPIC_API_KEY", "anthropic_models"),
-            "minimax": ("MINIMAX_API_KEY", "minimax_models"),
+            "minimax": ("MINIMAX_API_KEY", None),
             "moonshot": ("MOONSHOT_API_KEY", "moonshot_models"),
             "openai": ("OPENAI_API_KEY", "open_ai_chat_completion_models"),
             "gemini": ("GEMINI_API_KEY", "gemini_models"),
@@ -182,11 +183,9 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
                 continue
             try:
                 if attr_name is None:
-                    model_set = {"MiniMax-M3"}
+                    model_set = MINIMAX_MODELS
                 else:
                     model_set = getattr(litellm, attr_name, None) or set()
-                    if provider == "minimax" and not model_set:
-                        model_set = {"MiniMax-M3"}
                 if not model_set:
                     continue
                 for model_id in model_set:
@@ -1012,7 +1011,7 @@ def lookup_provider(model: str) -> str:
         if os.path.exists(adapter_config):
             return "lora"
 
-    if model == "MiniMax-M3":
+    if model in MINIMAX_MODELS:
         return "minimax"
 
     lowered = model.lower()

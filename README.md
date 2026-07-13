@@ -966,6 +966,17 @@ model_path = run_sft(X_train, y_train, config=sft_config, format_style="llama")
 
 Works with all major LLM providers through LiteLLM: `ollama`, `openai`, `anthropic`, `gemini`, `deepseek`, `airllm`, `openai-like`, and more.
 
+### MiniMax
+
+Set `MINIMAX_API_KEY` and use `provider="minimax"` with `MiniMax-M3` or `MiniMax-M2.7`. The optional `MINIMAX_API_URL` setting selects the region and compatible protocol; it defaults to the global OpenAI-compatible Base URL.
+
+| Region | OpenAI-compatible Base URL | Anthropic-compatible Base URL |
+| --- | --- | --- |
+| Global | `https://api.minimax.io/v1` | `https://api.minimax.io/anthropic` |
+| China | `https://api.minimaxi.com/v1` | `https://api.minimaxi.com/anthropic` |
+
+Use the Anthropic-compatible Base URL exactly as shown. The client appends `/v1/messages` when sending a request.
+
 ### QLLM-PAM (local, attention-free)
 
 `npcpy` can run the QLLM-PAM family of local checkpoints directly. QLLM-PAM is a complex-valued, attention-free language model based on Phase-Associative Memory (PAM); see the [Hugging Face model repo](https://huggingface.co/gowravvishwakarma/qllm-pam-v11-e3k3-chat) and the paper on arXiv ([2604.05030](https://arxiv.org/abs/2604.05030)).
