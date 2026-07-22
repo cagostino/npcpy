@@ -2612,14 +2612,15 @@ def get_litellm_response(
 
     # LiteLLM routes many providers (e.g. OpenRouter) by the model prefix.
     # e.g. `moonshotai/kimi-k3` is unresolvable, but `openrouter/moonshotai/kimi-k3` works.
+    # Use a lowercase provider slug for the prefix because LiteLLM expects that.
     normalized_model = model.lower()
     normalized_provider = provider.lower().replace(" ", "")
     if "api_base" in api_params and normalized_provider == "openai":
         api_params["model"] = f"openai/{model}"
     elif "/" not in model or model.startswith("/"):
-        api_params["model"] = f"{provider}/{model}"
+        api_params["model"] = f"{normalized_provider}/{model}"
     elif not normalized_model.startswith(normalized_provider + "/"):
-        api_params["model"] = f"{provider}/{model}"
+        api_params["model"] = f"{normalized_provider}/{model}"
     else:
         api_params["model"] = model
     if api_key is not None: 
