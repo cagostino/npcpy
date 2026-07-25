@@ -354,7 +354,7 @@ def _update_field_in_yaml(content, field, new_value):
 
 
 DEFAULT_MD_AGENT_JINXES = [
-    'sh', 'python', 'edit_file', 'load_file', 'file_search',
+    'read', 'write', 'execute', 'edit_file', 'load_file', 'file_search',
     'web_search', 'chat', 'stop',
 ]
 
@@ -471,8 +471,16 @@ class Jinx:
         Performs the first-pass Jinja rendering on the Jinx's raw steps.
         This expands Jinja control flow (for, if) to generate step structures,
         then expands nested Jinx calls (e.g., {{ sh(...) }} or engine: jinx_name)
-        and inline macros.
+        and inline macros. Also renders the jinx description so it can include
+        runtime context such as ctx.available_executables.
         """
+        if isinstance(self.description, str):
+            try:
+                desc_template = jinja_env_for_macros.from_string(self.description)
+                self.description = desc_template.render(**jinja_env_for_macros.globals)
+            except Exception:
+                pass
+
         if self._raw_steps and isinstance(self._raw_steps[0], dict):
             structurally_expanded_steps = list(self._raw_steps)
         else:
