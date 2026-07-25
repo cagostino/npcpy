@@ -70,7 +70,7 @@ class TestJinxesEndpoints:
 
     def test_global_jinxes(self, client):
         """Test global jinxes endpoint"""
-        response = client.get('/api/jinxes/global')
+        response = client.get('/api/jinxes/available')
         assert response.status_code == 200
         data = json.loads(response.data)
         assert 'jinxes' in data
