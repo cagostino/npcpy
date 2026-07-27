@@ -323,3 +323,153 @@ class TestFoundationModelTraining:
         )
         path = run_hilbert_embedding_sft_torch(anchors, positives, config=config)
         assert path == config.output_model_path
+
+
+class TestEncodeTextsBatching:
+    """`encode_texts` must chunk its forward pass instead of doing one giant pass.
+
+    Pre-fix it tokenized and forwarded the entire `texts` list at once, so peak
+    memory scaled with `len(texts)` and large inputs went OOM. `evaluate_embeddings`
+    is an in-repo caller that hands it full datasets.
+
+    These tests use a stub tokenizer and a tiny torch module, so they need no
+    network and no HuggingFace download (unlike the `@pytest.mark.slow` suites).
+    """
+
+    HIDDEN = 8
+    VOCAB = 16
+    DIM = 4
+
+    @staticmethod
+    def _token_id(token, vocab):
+        # Deterministic across processes, unlike hash() on str.
+        return (sum(ord(c) for c in token) % (vocab - 1)) + 1
+
+    @pytest.fixture
+    def stubs(self):
+        import torch
+        from types import SimpleNamespace
+
+        vocab, hidden, dim = self.VOCAB, self.HIDDEN, self.DIM
+        token_id = self._token_id
+
+        class StubTokenizer:
+            """Pads each call to that call's own batch maximum, like a real one."""
+
+            def __init__(self):
+                self.batches = []
+
+            def __call__(self, texts, padding=True, truncation=True,
+                         max_length=256, return_tensors="pt"):
+                texts = list(texts)
+                self.batches.append(texts)
+                token_lists = [t.split()[:max_length] for t in texts]
+                width = max(len(t) for t in token_lists)
+                input_ids = torch.zeros(len(texts), width, dtype=torch.long)
+                attention_mask = torch.zeros(len(texts), width, dtype=torch.long)
+                for row, tokens in enumerate(token_lists):
+                    for col, tok in enumerate(tokens):
+                        input_ids[row, col] = token_id(tok, vocab)
+                        attention_mask[row, col] = 1
+                return {"input_ids": input_ids, "attention_mask": attention_mask}
+
+        class StubModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.embedding = torch.nn.Embedding(vocab, hidden)
+                self.forward_batch_sizes = []
+
+            def forward(self, input_ids=None, attention_mask=None, **kwargs):
+                self.forward_batch_sizes.append(int(input_ids.shape[0]))
+                return SimpleNamespace(last_hidden_state=self.embedding(input_ids))
+
+        torch.manual_seed(0)
+        model = StubModel()
+        projector = torch.nn.Linear(hidden, dim)
+        return model, projector, StubTokenizer()
+
+    @staticmethod
+    def _texts(n):
+        # Deliberately uneven token counts so per-batch padding differs by chunk.
+        return [" ".join(["tok%d" % (i + k) for k in range(1 + i % 3)]) for i in range(n)]
+
+    def test_chunks_the_forward_pass_by_batch_size(self, stubs):
+        from npcpy.ft.embeddings import encode_texts
+
+        model, projector, tokenizer = stubs
+        embeddings = encode_texts(self._texts(7), model, projector, tokenizer,
+                                  device="cpu", max_length=32, batch_size=3)
+
+        # 7 texts at batch_size=3 => three forward passes, never one pass of 7.
+        assert model.forward_batch_sizes == [3, 3, 1]
+        assert [len(b) for b in tokenizer.batches] == [3, 3, 1]
+        assert len(embeddings) == 7
+        assert all(len(e) == self.DIM for e in embeddings)
+
+    def test_batching_does_not_change_the_embeddings(self, stubs):
+        """Chunking must be numerically transparent.
+
+        Padding is per-batch, but `_mean_pooling` divides by the attention mask,
+        so pad positions cannot leak into the mean.
+        """
+        from npcpy.ft.embeddings import encode_texts
+
+        model, projector, tokenizer = stubs
+        texts = self._texts(6)
+
+        one_pass = encode_texts(texts, model, projector, tokenizer,
+                                device="cpu", max_length=32, batch_size=len(texts))
+        per_item = encode_texts(texts, model, projector, tokenizer,
+                                device="cpu", max_length=32, batch_size=1)
+        uneven = encode_texts(texts, model, projector, tokenizer,
+                              device="cpu", max_length=32, batch_size=4)
+
+        assert model.forward_batch_sizes == [6, 1, 1, 1, 1, 1, 1, 4, 2]
+        np.testing.assert_allclose(np.array(per_item), np.array(one_pass), atol=1e-6)
+        np.testing.assert_allclose(np.array(uneven), np.array(one_pass), atol=1e-6)
+
+    def test_default_batch_size_bounds_peak_memory(self, stubs):
+        """The default must not be unbounded: 70 texts cannot be one pass of 70."""
+        from npcpy.ft.embeddings import encode_texts
+
+        model, projector, tokenizer = stubs
+        embeddings = encode_texts(self._texts(70), model, projector, tokenizer,
+                                  device="cpu", max_length=32)
+
+        assert len(embeddings) == 70
+        assert max(model.forward_batch_sizes) <= 32
+        assert len(model.forward_batch_sizes) > 1
+
+    def test_empty_input_does_no_forward_pass(self, stubs):
+        from npcpy.ft.embeddings import encode_texts
+
+        model, projector, tokenizer = stubs
+        assert encode_texts([], model, projector, tokenizer, device="cpu") == []
+        assert model.forward_batch_sizes == []
+        assert tokenizer.batches == []
+
+    @pytest.mark.parametrize("bad", [0, -1])
+    def test_rejects_non_positive_batch_size(self, stubs, bad):
+        from npcpy.ft.embeddings import encode_texts
+
+        model, projector, tokenizer = stubs
+        with pytest.raises(ValueError, match="batch_size must be >= 1"):
+            encode_texts(self._texts(3), model, projector, tokenizer,
+                         device="cpu", batch_size=bad)
+
+    def test_evaluate_embeddings_threads_batch_size_through(self, stubs):
+        from npcpy.ft.embeddings import evaluate_embeddings
+
+        model, projector, tokenizer = stubs
+        anchors = self._texts(4)
+        positives = self._texts(4)
+        negatives = self._texts(4)
+
+        metrics = evaluate_embeddings(anchors, positives, negatives, model,
+                                      projector, tokenizer, device="cpu",
+                                      max_length=32, batch_size=2)
+
+        # Three lists of 4 at batch_size=2 => 6 forward passes of 2, none of 4.
+        assert model.forward_batch_sizes == [2, 2, 2, 2, 2, 2]
+        assert set(metrics) == {"mrr", "recall@1", "recall@5"}
+        assert 0.0 <= metrics["mrr"] <= 1.0

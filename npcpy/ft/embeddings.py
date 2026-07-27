@@ -590,23 +590,42 @@ def encode_texts(
     tokenizer,
     device: str = "cpu",
     max_length: int = 256,
+    batch_size: int = 32,
 ) -> List[List[float]]:
+    """Encode texts to normalized embeddings, one ``batch_size`` chunk at a time.
+
+    The whole list used to be tokenized and forwarded in a single pass, so peak
+    memory scaled with ``len(texts)`` and large inputs went OOM. Chunking keeps
+    peak memory bounded by ``batch_size`` instead.
+
+    Results are unchanged by chunking: padding is per-batch, but ``_mean_pooling``
+    divides by the attention mask, so pad tokens never contribute to the mean.
+    """
     if not TORCH_AVAILABLE:
         raise ImportError("PyTorch required")
+
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
 
     model.eval()
     dev = torch.device(device)
 
-    enc = tokenizer(texts, padding=True, truncation=True,
-                    max_length=max_length, return_tensors="pt")
-    enc = {k: v.to(dev) for k, v in enc.items()}
+    embeddings: List[List[float]] = []
 
     with torch.no_grad():
-        out = model(**enc).last_hidden_state
-        pooled = _mean_pooling(out, enc["attention_mask"])
-        emb = F.normalize(projector(pooled), p=2, dim=-1)
+        for start in range(0, len(texts), batch_size):
+            batch = texts[start:start + batch_size]
+            enc = tokenizer(batch, padding=True, truncation=True,
+                            max_length=max_length, return_tensors="pt")
+            enc = {k: v.to(dev) for k, v in enc.items()}
 
-    return emb.cpu().numpy().tolist()
+            out = model(**enc).last_hidden_state
+            pooled = _mean_pooling(out, enc["attention_mask"])
+            emb = F.normalize(projector(pooled), p=2, dim=-1)
+
+            embeddings.extend(emb.cpu().numpy().tolist())
+
+    return embeddings
 
 def evaluate_embeddings(
     anchors: List[str],
@@ -617,10 +636,11 @@ def evaluate_embeddings(
     tokenizer,
     device: str = "cpu",
     max_length: int = 256,
+    batch_size: int = 32,
 ) -> Dict[str, float]:
-    a_emb = np.array(encode_texts(anchors, model, projector, tokenizer, device, max_length))
-    p_emb = np.array(encode_texts(positives, model, projector, tokenizer, device, max_length))
-    n_emb = np.array(encode_texts(negatives, model, projector, tokenizer, device, max_length))
+    a_emb = np.array(encode_texts(anchors, model, projector, tokenizer, device, max_length, batch_size))
+    p_emb = np.array(encode_texts(positives, model, projector, tokenizer, device, max_length, batch_size))
+    n_emb = np.array(encode_texts(negatives, model, projector, tokenizer, device, max_length, batch_size))
 
     combined = np.concatenate([p_emb, n_emb], axis=0)
     sim = a_emb @ combined.T
