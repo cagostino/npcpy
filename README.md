@@ -1,5 +1,3 @@
-[![MCP Toplist](https://mcptoplist.com/badge/mcp.so%2Fnpcpy%2FNPC-Worldwide.svg)](https://mcptoplist.com/server/mcp.so%2Fnpcpy%2FNPC-Worldwide)
-
 <p align="center">
   <a href="https://npcpy.readthedocs.io/">
   <img src="https://raw.githubusercontent.com/cagostino/npcpy/main/npcpy/npc-python.png" alt="npc-python logo" width=250></a>
@@ -11,6 +9,7 @@
 ```bash
 pip install npcpy
 ```
+[![MCP Toplist](https://mcptoplist.com/badge/mcp.so%2Fnpcpy%2FNPC-Worldwide.svg)](https://mcptoplist.com/server/mcp.so%2Fnpcpy%2FNPC-Worldwide)
 
 ## Quick Examples
 
