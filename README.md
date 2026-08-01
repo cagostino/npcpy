@@ -5,6 +5,12 @@
 
 # npcpy
 
+<p align="center">
+  <a href="https://github.com/NPC-Worldwide/npcpy/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+  <a href="https://pypi.org/project/npcpy/"><img src="https://img.shields.io/pypi/v/npcpy.svg" alt="PyPI"></a>
+  <a href="https://npcpy.readthedocs.io/"><img src="https://img.shields.io/badge/docs-readthedocs-brightgreen.svg" alt="Docs"></a>
+</p>
+
 `npcpy` is a library that provides key primitives for research and development with multimodal language models, agentic AI, and knowledge graphs. Its flexible framework makes it easy to engineer powerful AI applications with support for local (`ollama`, `llama.cpp`, `omlx`, `LM Studio`) and cloud providers. Build multi-agent teams and simplify context engineering through the NPC Context-Agent-Tool data layer which ensures compliance through software rather than prompts.
 ```bash
 pip install npcpy
