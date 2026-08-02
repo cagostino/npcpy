@@ -201,7 +201,8 @@ class MCPClientNPC:
           - str: command string starting with python/npx/uvx/node/docker
           - dict with 'path': local script file
           - dict with 'command' + 'args': arbitrary stdio command (npx, docker, uvx, node, etc.)
-          - dict with 'url': SSE/HTTP remote server
+          - dict with 'url': remote server (SSE by default)
+          - dict with 'url' + transport='streamable-http': Streamable HTTP server
         """
         if isinstance(server_spec, str):
             if _is_command_string(server_spec):
@@ -222,12 +223,31 @@ class MCPClientNPC:
             self.session = None
         self._exit_stack = AsyncExitStack()
         if "url" in server_spec:
-            from mcp.client.sse import sse_client
             url = server_spec["url"]
-            self._log(f"Connecting to SSE server: {url}")
             self.server_script_path = url
-            sse_transport = await self._exit_stack.enter_async_context(sse_client(url))
-            self.session = await self._exit_stack.enter_async_context(ClientSession(*sse_transport))
+            transport = server_spec.get("transport", "sse")
+            if not isinstance(transport, str):
+                raise ValueError("MCP remote transport must be 'sse' or 'streamable-http'")
+            transport = transport.strip().lower()
+
+            if transport == "sse":
+                from mcp.client.sse import sse_client
+                self._log(f"Connecting to SSE server: {url}")
+                sse_transport = await self._exit_stack.enter_async_context(sse_client(url))
+                self.session = await self._exit_stack.enter_async_context(ClientSession(*sse_transport))
+            elif transport == "streamable-http":
+                from mcp.client.streamable_http import streamablehttp_client
+                self._log(f"Connecting to Streamable HTTP server: {url}")
+                http_transport = await self._exit_stack.enter_async_context(streamablehttp_client(url))
+                read_stream, write_stream, *_ = http_transport
+                self.session = await self._exit_stack.enter_async_context(
+                    ClientSession(read_stream, write_stream)
+                )
+            else:
+                raise ValueError(
+                    f"Unsupported MCP remote transport '{transport}'; "
+                    "expected 'sse' or 'streamable-http'"
+                )
         elif "command" in server_spec:
             command = server_spec["command"]
             args = server_spec.get("args", [])
@@ -305,7 +325,7 @@ class MCPClientNPC:
         tool_names = list(self.tool_map.keys())
         self._log(f"Connection successful. Tools: {', '.join(tool_names) if tool_names else 'None'}")
     def connect_sync(self, server_spec) -> bool:
-        """Connect synchronously. server_spec: str (path) or dict with path/command/url."""
+        """Connect synchronously using a path, command, SSE URL, or Streamable HTTP URL."""
         self._cleanup_sync()
         loop = self._get_loop()
         try:

@@ -1,8 +1,12 @@
 """Tests for MCP server integration and skills functionality."""
 
+import asyncio
 import os
 import tempfile
 import shutil
+import sys
+import types
+from contextlib import asynccontextmanager
 import pytest
 from pathlib import Path
 
@@ -120,6 +124,111 @@ jinxes:
 
 class TestMCPClientNPC:
     """Test MCPClientNPC class."""
+
+    @pytest.fixture
+    def remote_mcp_fakes(self, monkeypatch):
+        """Replace MCP transports and sessions with hermetic async fakes."""
+        from npcpy import serve
+
+        calls = {"sse": [], "streamable-http": [], "session_args": []}
+
+        @asynccontextmanager
+        async def sse_client(url):
+            calls["sse"].append(url)
+            yield ("sse-read", "sse-write")
+
+        @asynccontextmanager
+        async def streamablehttp_client(url):
+            calls["streamable-http"].append(url)
+            yield ("http-read", "http-write", lambda: "session-id")
+
+        class FakeClientSession:
+            def __init__(self, *args):
+                calls["session_args"].append(args)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, traceback):
+                return False
+
+            async def initialize(self):
+                return None
+
+            async def list_tools(self):
+                return types.SimpleNamespace(tools=[])
+
+        sse_module = types.ModuleType("mcp.client.sse")
+        sse_module.sse_client = sse_client
+        streamable_module = types.ModuleType("mcp.client.streamable_http")
+        streamable_module.streamablehttp_client = streamablehttp_client
+        monkeypatch.setitem(sys.modules, "mcp.client.sse", sse_module)
+        monkeypatch.setitem(sys.modules, "mcp.client.streamable_http", streamable_module)
+        monkeypatch.setattr(serve, "ClientSession", FakeClientSession)
+        return calls
+
+    @staticmethod
+    async def _connect_and_close(client, server_spec):
+        try:
+            await client._connect_async(server_spec)
+        finally:
+            if client._exit_stack is not None:
+                await client._exit_stack.aclose()
+
+    def test_remote_url_preserves_sse_default(self, remote_mcp_fakes):
+        """A URL without an explicit transport remains an SSE connection."""
+        from npcpy.serve import MCPClientNPC
+
+        client = MCPClientNPC(debug=False)
+        asyncio.run(self._connect_and_close(client, {"url": "https://example.com/sse"}))
+
+        assert remote_mcp_fakes["sse"] == ["https://example.com/sse"]
+        assert remote_mcp_fakes["streamable-http"] == []
+        assert remote_mcp_fakes["session_args"] == [("sse-read", "sse-write")]
+
+    def test_remote_url_supports_streamable_http(self, remote_mcp_fakes):
+        """Streamable HTTP uses only the transport's read and write streams."""
+        from npcpy.serve import MCPClientNPC
+
+        client = MCPClientNPC(debug=False)
+        asyncio.run(self._connect_and_close(client, {
+            "url": "https://search.parallel.ai/mcp",
+            "transport": "streamable-http",
+        }))
+
+        assert remote_mcp_fakes["sse"] == []
+        assert remote_mcp_fakes["streamable-http"] == ["https://search.parallel.ai/mcp"]
+        assert remote_mcp_fakes["session_args"] == [("http-read", "http-write")]
+
+    def test_remote_url_rejects_unknown_transport(self, remote_mcp_fakes):
+        """Unknown transport names fail before a remote connection is opened."""
+        from npcpy.serve import MCPClientNPC
+
+        client = MCPClientNPC(debug=False)
+        with pytest.raises(ValueError, match="expected 'sse' or 'streamable-http'"):
+            asyncio.run(self._connect_and_close(client, {
+                "url": "https://example.com/mcp",
+                "transport": "websocket",
+            }))
+
+        assert remote_mcp_fakes["sse"] == []
+        assert remote_mcp_fakes["streamable-http"] == []
+        assert remote_mcp_fakes["session_args"] == []
+
+    def test_remote_url_rejects_non_string_transport(self, remote_mcp_fakes):
+        """Transport configuration must be a documented string value."""
+        from npcpy.serve import MCPClientNPC
+
+        client = MCPClientNPC(debug=False)
+        with pytest.raises(ValueError, match="must be 'sse' or 'streamable-http'"):
+            asyncio.run(self._connect_and_close(client, {
+                "url": "https://example.com/mcp",
+                "transport": True,
+            }))
+
+        assert remote_mcp_fakes["sse"] == []
+        assert remote_mcp_fakes["streamable-http"] == []
+        assert remote_mcp_fakes["session_args"] == []
 
     def test_mcp_client_import(self):
         """Test that MCPClientNPC can be imported."""

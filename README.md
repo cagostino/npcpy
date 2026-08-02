@@ -602,6 +602,22 @@ if __name__ == "__main__":
 
 The team's NPCs automatically get access to MCP tools alongside their jinxes.
 
+For a remote server that uses Streamable HTTP, set its transport explicitly.
+For example, Parallel Search MCP provides live web search and URL fetching
+without requiring an account or API key:
+
+```yaml
+forenpc: assistant
+mcp_servers:
+  - url: https://search.parallel.ai/mcp
+    transport: streamable-http
+    tools:
+      - web_search
+      - web_fetch
+```
+
+Remote URLs continue to use SSE when `transport` is omitted.
+
 </details>
 
 <details>
