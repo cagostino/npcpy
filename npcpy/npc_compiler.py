@@ -15,6 +15,7 @@ import pathlib
 import sys 
 import fnmatch
 import subprocess
+import traceback as _traceback
 from typing import Any, Dict, List, Optional, Union, Callable, Tuple
 from jinja2 import Environment, FileSystemLoader, Template, Undefined, DictLoader
 from jinja2.sandbox import SandboxedEnvironment
@@ -24,10 +25,13 @@ from npcpy.tools import auto_tools
 import math
 import random
 import base64
+import logging
 from npcpy.npc_sysenv import (
     get_system_message,
     print_and_process_stream_with_markdown,
     )
+
+logger = logging.getLogger("npcpy.npc_compiler")
 
 class SilentUndefined(Undefined):
     """Undefined that silently returns empty string instead of raising errors"""
@@ -511,17 +515,29 @@ class Jinx:
                 continue
 
             engine_name = raw_step.get('engine')
-            
+            logger.debug(
+                "[RENDER-FIRST-PASS] %s step engine=%s in_callables=%s",
+                self.jinx_name, engine_name, engine_name in all_jinx_callables,
+            )
+
             if engine_name and engine_name in all_jinx_callables:
                 step_name = raw_step.get('name', f'call_{engine_name}')
                 jinx_args = {
-                    k: v for k, v in raw_step.items() 
+                    k: v for k, v in raw_step.items()
                     if k not in ['engine', 'name']
                 }
-                
+                logger.debug(
+                    "[RENDER-FIRST-PASS] %s expanding %s with args=%s",
+                    self.jinx_name, engine_name, {k: repr(v) for k, v in jinx_args.items()},
+                )
+
                 jinx_callable = all_jinx_callables[engine_name]
                 try:
                     expanded_yaml_string = jinx_callable(**jinx_args)
+                    logger.debug(
+                        "[RENDER-FIRST-PASS] %s expanded %s YAML:\n%s",
+                        self.jinx_name, engine_name, expanded_yaml_string,
+                    )
                     expanded_steps = yaml.safe_load(expanded_yaml_string)
                     
                     if isinstance(expanded_steps, list):
@@ -636,12 +652,17 @@ class Jinx:
         active_npc = step_npc if step_npc else npc
 
         code_content = step.get("code") or ""
+        logger.debug(
+            "[EXECUTE-STEP] jinx=%s step=%s code_template=%s context_keys=%s",
+            self.jinx_name, step_name, repr(code_content), list(context.keys()),
+        )
 
         try:
             template = jinja_env.from_string(code_content)
             rendered_code = template.render(**context)
         except Exception as e:
-            error_msg = f"Error rendering template for step '{step_name}' (second pass): {type(e).__name__}: {e}"
+            error_msg = f"Error rendering template for step '{step_name}' (second pass): {type(e).__name__}: {e}\n--- template ---\n{code_content}\n--- context keys ---\n{list(context.keys())}"
+            logger.error("[JINX-ERROR] %s", error_msg)
             context['output'] = error_msg
             return context
 
@@ -683,13 +704,13 @@ class Jinx:
         try:
             exec(rendered_code, exec_globals, exec_locals)
         except SystemExit as e:
-            error_msg = f"Error executing step '{step_name}' in jinx '{self.jinx_name}': code called sys.exit({e.code})"
-            print(f"[JINX-ERROR] {error_msg}")
+            error_msg = f"Error executing step '{step_name}' in jinx '{self.jinx_name}': code called sys.exit({e.code})\n--- rendered code ---\n{rendered_code}\n--- traceback ---\n{_traceback.format_exc()}"
+            logger.error("[JINX-ERROR] %s", error_msg)
             context['output'] = error_msg
             return context
         except Exception as e:
-            error_msg = f"Error executing step '{step_name}' in jinx '{self.jinx_name}': {type(e).__name__}: {e}"
-            print(f"[JINX-ERROR] {error_msg}")
+            error_msg = f"Error executing step '{step_name}' in jinx '{self.jinx_name}': {type(e).__name__}: {e}\n--- rendered code ---\n{rendered_code}\n--- traceback ---\n{_traceback.format_exc()}"
+            logger.error("[JINX-ERROR] %s", error_msg)
             context['output'] = error_msg
             return context
 
@@ -1364,13 +1385,19 @@ class NPC:
         Loads and performs first-pass Jinja rendering for NPC-specific jinxes,
         now that the NPC's team context is fully established.
         """
-        print(f"[JINX] initialize_jinxes called for NPC '{self.name}'")
-        print(f"[JINX] NPC '{self.name}' jinxes_spec: {self.jinxes_spec}")
+        logger.debug("[JINX] initialize_jinxes called for NPC '%s'", self.name)
+        logger.debug("[JINX] NPC '%s' jinxes_spec: %s", self.name, self.jinxes_spec)
         if self.team:
-            print(f"[JINX] NPC '{self.name}' team: {self.team.name} team_path: {getattr(self.team, 'team_path', None)}")
-            print(f"[JINX] NPC '{self.name}' team jinxes_dict keys: {list(self.team.jinxes_dict.keys())}")
+            logger.debug(
+                "[JINX] NPC '%s' team: %s team_path: %s",
+                self.name, self.team.name, getattr(self.team, 'team_path', None),
+            )
+            logger.debug(
+                "[JINX] NPC '%s' team jinxes_dict keys: %s",
+                self.name, list(self.team.jinxes_dict.keys()),
+            )
         else:
-            print(f"[JINX] NPC '{self.name}' has NO TEAM")
+            logger.debug("[JINX] NPC '%s' has NO TEAM", self.name)
         npc_jinxes_raw_list = []
         
         if self.jinxes_spec == "*":
@@ -1390,10 +1417,10 @@ class NPC:
                         matched_names = [jinx_spec] if jinx_spec in self.team.jinxes_dict else []
 
                     if not matched_names:
-                        print(
-                            f"Warning: NPC '{self.name}' references jinx '{jinx_spec}' but no matching jinx was found. "
-                            f"Skipping. Available jinxes (first 20): {list(self.team.jinxes_dict.keys())[:20]}",
-                            file=sys.stderr,
+                        logger.warning(
+                            "NPC '%s' references jinx '%s' but no matching jinx was found. "
+                            "Skipping. Available jinxes (first 20): %s",
+                            self.name, jinx_spec, list(self.team.jinxes_dict.keys())[:20],
                         )
                         continue
 
@@ -1436,29 +1463,54 @@ class NPC:
 
             combined_raw_jinxes_dict = {j.jinx_name: j for j in all_available_raw_jinxes}
 
+            def create_jinx_callable(jinx_obj_in_closure):
+                def callable_jinx(**kwargs):
+                    temp_jinja_env = SandboxedEnvironment(undefined=SilentUndefined)
+                    rendered_target_steps = []
+                    template_kwargs = {
+                        k: v for k, v in kwargs.items()
+                        if isinstance(v, str) and ('{{' in v or '{%' in v)
+                    }
+                    literal_kwargs = {k: v for k, v in kwargs.items() if k not in template_kwargs}
+                    for target_step in jinx_obj_in_closure._raw_steps:
+                        temp_rendered_step = {}
+                        for k, v in target_step.items():
+                            if isinstance(v, str):
+                                try:
+                                    preserve = template_kwargs and any(
+                                        re.search(r'\{\{\s*' + re.escape(var) + r'\b', v) or
+                                        re.search(r'\{%\s*' + re.escape(var) + r'\b', v)
+                                        for var in template_kwargs
+                                    )
+                                    if preserve:
+                                        rendered_value = v
+                                    else:
+                                        rendered_value = temp_jinja_env.from_string(v).render(**literal_kwargs)
+                                    logger.debug(
+                                        "[JINX-DEBUG] %s.%s kwargs=%s rendered=%s",
+                                        jinx_obj_in_closure.jinx_name, k,
+                                        {kk: repr(vv) for kk, vv in kwargs.items()},
+                                        repr(rendered_value),
+                                    )
+                                    temp_rendered_step[k] = rendered_value
+                                except Exception as e:
+                                    logger.warning(
+                                        "Error in Jinx macro '%s' rendering step field '%s' (NPC first pass): %s",
+                                        jinx_obj_in_closure.jinx_name, k, e,
+                                    )
+                                    temp_rendered_step[k] = v
+                            else:
+                                temp_rendered_step[k] = v
+                        rendered_target_steps.append(temp_rendered_step)
+                    dumped = yaml.dump(rendered_target_steps, default_flow_style=False)
+                    logger.debug("[JINX-DEBUG] %s dumped YAML:\n%s", jinx_obj_in_closure.jinx_name, dumped)
+                    return dumped
+                return callable_jinx
+
             npc_first_pass_jinja_env = SandboxedEnvironment(undefined=SilentUndefined)
 
             jinx_macro_globals = {}
             for raw_jinx in combined_raw_jinxes_dict.values():
-                def create_jinx_callable(jinx_obj_in_closure):
-                    def callable_jinx(**kwargs):
-                        temp_jinja_env = SandboxedEnvironment(undefined=SilentUndefined)
-                        rendered_target_steps = []
-                        for target_step in jinx_obj_in_closure._raw_steps:
-                            temp_rendered_step = {}
-                            for k, v in target_step.items():
-                                if isinstance(v, str):
-                                    try:
-                                        temp_rendered_step[k] = temp_jinja_env.from_string(v).render(**kwargs)
-                                    except Exception as e:
-                                        print(f"Warning: Error in Jinx macro '{jinx_obj_in_closure.jinx_name}' rendering step field '{k}' (NPC first pass): {e}")
-                                        temp_rendered_step[k] = v
-                                else:
-                                    temp_rendered_step[k] = v
-                            rendered_target_steps.append(temp_rendered_step)
-                        return yaml.dump(rendered_target_steps, default_flow_style=False)
-                    return callable_jinx
-                
                 jinx_macro_globals[raw_jinx.jinx_name] = create_jinx_callable(raw_jinx)
             
             npc_first_pass_jinja_env.globals.update(jinx_macro_globals)
@@ -1468,10 +1520,16 @@ class NPC:
                     raw_npc_jinx.render_first_pass(npc_first_pass_jinja_env, jinx_macro_globals)
                     self.jinxes_dict[raw_npc_jinx.jinx_name] = raw_npc_jinx
                 except Exception as e:
-                    print(f"Error performing first-pass rendering for NPC Jinx '{raw_npc_jinx.jinx_name}': {e}")
+                    logger.warning(
+                        "Error performing first-pass rendering for NPC Jinx '%s': %s",
+                        raw_npc_jinx.jinx_name, e,
+                    )
         
         self.jinx_tool_catalog = build_jinx_tool_catalog(self.jinxes_dict)
-        print(f"NPC {self.name} loaded {len(self.jinxes_dict)} jinxes and built catalog with {len(self.jinx_tool_catalog)} tools.", file=sys.stderr)
+        logger.debug(
+            "NPC %s loaded %d jinxes and built catalog with %d tools.",
+            self.name, len(self.jinxes_dict), len(self.jinx_tool_catalog or {}),
+        )
 
 
     def get_memory_context(self):
@@ -1687,13 +1745,19 @@ class NPC:
         tool_executors = {}
         seen = set()
 
-        print(f"[TOOLS] resolve_tools called for NPC '{self.name}'")
-        print(f"[TOOLS] NPC '{self.name}' jinxes_dict has {len(self.jinxes_dict)} entries: {list(self.jinxes_dict.keys())}")
-        print(f"[TOOLS] NPC '{self.name}' jinx_tool_catalog has {len(self.jinx_tool_catalog or {})} entries")
-        print(f"[TOOLS] NPC '{self.name}' mcp_servers: {self.mcp_servers}")
+        logger.debug("[TOOLS] resolve_tools called for NPC '%s'", self.name)
+        logger.debug(
+            "[TOOLS] NPC '%s' jinxes_dict has %d entries: %s",
+            self.name, len(self.jinxes_dict), list(self.jinxes_dict.keys()),
+        )
+        logger.debug(
+            "[TOOLS] NPC '%s' jinx_tool_catalog has %d entries",
+            self.name, len(self.jinx_tool_catalog or {}),
+        )
+        logger.debug("[TOOLS] NPC '%s' mcp_servers: %s", self.name, self.mcp_servers)
 
         catalog = self.jinx_tool_catalog or build_jinx_tool_catalog(self.jinxes_dict)
-        print(f"[TOOLS] Built catalog with {len(catalog)} jinx entries")
+        logger.debug("[TOOLS] Built catalog with %d jinx entries", len(catalog))
         for name, tool_def in catalog.items():
             if name not in seen:
                 tools_for_llm.append(tool_def)
@@ -2527,7 +2591,10 @@ class Team:
 
         self._perform_first_pass_jinx_rendering()
         self.jinx_tool_catalog = build_jinx_tool_catalog(self.jinxes_dict)
-        print(f"[TEAM] Built Jinx tool catalog with {len(self.jinx_tool_catalog)} entries for team {self.name}", file=sys.stderr)
+        logger.debug(
+            "[TEAM] Built Jinx tool catalog with %d entries for team %s",
+            len(self.jinx_tool_catalog), self.name,
+        )
 
         for npc_obj in self.npcs.values():
             npc_obj.initialize_jinxes(team_raw_jinxes=self._raw_jinxes_list) 
@@ -2560,9 +2627,9 @@ class Team:
             if os.path.exists(skills_path):
                 for jinx_obj in load_jinxes_from_directory(skills_path):
                     self._raw_jinxes_list.append(jinx_obj)
-                print(f"[TEAM] Loaded skills from SKILLS_DIRECTORY: {skills_path}")
+                logger.debug("[TEAM] Loaded skills from SKILLS_DIRECTORY: %s", skills_path)
             else:
-                print(f"[TEAM] Warning: SKILLS_DIRECTORY not found: {skills_path}")
+                logger.warning("[TEAM] SKILLS_DIRECTORY not found: %s", skills_path)
 
         self._jinx_path_map = {}
         for jinx_obj in self._raw_jinxes_list:
@@ -2607,7 +2674,7 @@ class Team:
                 try:
                     team_root = _resolve_external_team_root(repo=repo, path=path, ref=ref)
                 except Exception as _e:
-                    print(f"Warning: Jinx('{name}', repo={repo!r}, path={path!r}) failed: {_e}", file=sys.stderr)
+                    logger.warning("Jinx('%s', repo=%r, path=%r) failed: %s", name, repo, path, _e)
                     return name
 
                 if team_root:
@@ -2616,7 +2683,10 @@ class Team:
                 if name in self._jinx_path_map:
                     return self._jinx_path_map[name]
 
-            print(f"Warning: Jinx('{name}') not found. Available: {list(self._jinx_path_map.keys())[:15]}...", file=sys.stderr)
+            logger.warning(
+                "Jinx('%s') not found. Available: %s...",
+                name, list(self._jinx_path_map.keys())[:15],
+            )
             return name
 
         def _resolve_external_team_root(repo=None, path=None, ref=None):
@@ -2668,7 +2738,7 @@ class Team:
                     try:
                         jinx_obj = Jinx(jinx_path=jinx_path)
                     except Exception as _e:
-                        print(f"Warning: failed to load foreign jinx {jinx_path}: {_e}", file=sys.stderr)
+                        logger.warning("failed to load foreign jinx %s: %s", jinx_path, _e)
                         return
                     for existing in self._raw_jinxes_list:
                         if existing.jinx_name == jinx_obj.jinx_name:
@@ -2866,20 +2936,45 @@ class Team:
                     temp_jinja_env = SandboxedEnvironment(undefined=SilentUndefined)
 
                     rendered_target_steps = []
+                    template_kwargs = {
+                        k: v for k, v in kwargs.items()
+                        if isinstance(v, str) and ('{{' in v or '{%' in v)
+                    }
+                    literal_kwargs = {k: v for k, v in kwargs.items() if k not in template_kwargs}
                     for target_step in jinx_obj_in_closure._raw_steps:
                         temp_rendered_step = {}
                         for k, v in target_step.items():
                             if isinstance(v, str):
                                 try:
-                                    temp_rendered_step[k] = temp_jinja_env.from_string(v).render(**kwargs)
+                                    preserve = template_kwargs and any(
+                                        re.search(r'\{\{\s*' + re.escape(var) + r'\b', v) or
+                                        re.search(r'\{%\s*' + re.escape(var) + r'\b', v)
+                                        for var in template_kwargs
+                                    )
+                                    if preserve:
+                                        rendered_value = v
+                                    else:
+                                        rendered_value = temp_jinja_env.from_string(v).render(**literal_kwargs)
+                                    logger.debug(
+                                        "[TEAM-DEBUG] %s.%s kwargs=%s rendered=%s",
+                                        jinx_obj_in_closure.jinx_name, k,
+                                        {kk: repr(vv) for kk, vv in kwargs.items()},
+                                        repr(rendered_value),
+                                    )
+                                    temp_rendered_step[k] = rendered_value
                                 except Exception as e:
-                                    print(f"Warning: Error in Jinx macro '{jinx_obj_in_closure.jinx_name}' rendering step field '{k}' (Team first pass): {e}")
+                                    logger.warning(
+                                        "Error in Jinx macro '%s' rendering step field '%s' (Team first pass): %s",
+                                        jinx_obj_in_closure.jinx_name, k, e,
+                                    )
                                     temp_rendered_step[k] = v
                             else:
                                 temp_rendered_step[k] = v
                         rendered_target_steps.append(temp_rendered_step)
 
-                    return yaml.dump(rendered_target_steps, default_flow_style=False)
+                    dumped = yaml.dump(rendered_target_steps, default_flow_style=False)
+                    logger.debug("[TEAM-DEBUG] %s dumped YAML:\n%s", jinx_obj_in_closure.jinx_name, dumped)
+                    return dumped
                 return callable_jinx
 
             jinx_macro_globals[raw_jinx.jinx_name] = create_jinx_callable(raw_jinx)
@@ -2898,12 +2993,18 @@ class Team:
                             template = self.jinja_env_for_first_pass.from_string(raw_jinx.npc)
                             raw_jinx.npc = template.render(**self.jinja_env_for_first_pass.globals)
                         except Exception as e:
-                            print(f"Warning: Error rendering npc field for jinx '{raw_jinx.jinx_name}': {e}")
+                            logger.warning(
+                                "Error rendering npc field for jinx '%s': %s",
+                                raw_jinx.jinx_name, e,
+                            )
 
                 raw_jinx.render_first_pass(self.jinja_env_for_first_pass, jinx_macro_globals)
                 self.jinxes_dict[raw_jinx.jinx_name] = raw_jinx
             except Exception as e:
-                print(f"Error performing first-pass rendering for Jinx '{raw_jinx.jinx_name}': {e}")
+                logger.warning(
+                    "Error performing first-pass rendering for Jinx '%s': %s",
+                    raw_jinx.jinx_name, e,
+                )
 
     def update_context(self, messages: list):
         """Update team context based on recent conversation patterns"""
@@ -3010,7 +3111,7 @@ class Team:
                         self.team_jinxes_spec = [s for s in spec if s]
                 return
         except Exception as e:
-            print(f"Warning: failed to resolve team-level jinxes from .ctx: {e}")
+            logger.warning("failed to resolve team-level jinxes from .ctx: %s", e)
 
     def _load_agents_from_md(self, path: str):
         """Load agents from an agents.md / AGENTS.md / CLAUDE.md file.
@@ -3122,7 +3223,7 @@ class Team:
         try:
             npc.initialize_jinxes(team_raw_jinxes=self._raw_jinxes_list)
         except Exception as e:
-            print(f"Warning: failed to initialize jinxes for markdown agent '{name}': {e}")
+            logger.warning("failed to initialize jinxes for markdown agent '%s': %s", name, e)
 
     def get_forenpc(self) -> Optional['NPC']:
         """
