@@ -16,6 +16,8 @@ import json
 import requests
 ON_WINDOWS = platform.system() == "Windows"
 ON_MACOS = platform.system() == "Darwin"
+MINIMAX_MODELS = frozenset({"MiniMax-M3", "MiniMax-M2.7"})
+_PROVIDER_FALLBACK_MODELS = {"minimax": {"MiniMax-M2.7"}}
 
 def get_data_dir() -> str:
     """Get the data directory."""
@@ -181,12 +183,8 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
             if litellm is None:
                 continue
             try:
-                if attr_name is None:
-                    model_set = {"MiniMax-M3"}
-                else:
-                    model_set = getattr(litellm, attr_name, None) or set()
-                    if provider == "minimax" and not model_set:
-                        model_set = {"MiniMax-M3"}
+                litellm_models = getattr(litellm, attr_name, None) or set() if attr_name else set()
+                model_set = litellm_models | _PROVIDER_FALLBACK_MODELS.get(provider, set())
                 if not model_set:
                     continue
                 for model_id in model_set:
@@ -1012,11 +1010,7 @@ def lookup_provider(model: str) -> str:
         if os.path.exists(adapter_config):
             return "lora"
 
-    if model == "MiniMax-M3":
-        return "minimax"
-
-    lowered = model.lower()
-    if lowered.startswith("minimax/") or lowered.startswith("minimax-"):
+    if model in MINIMAX_MODELS:
         return "minimax"
 
     if model == "deepseek-chat" or model == "deepseek-reasoner":

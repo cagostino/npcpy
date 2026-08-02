@@ -2460,9 +2460,6 @@ def get_litellm_response(
         api_key = api_key or "omlx"
         if 'timeout' not in kwargs:
             kwargs['timeout'] = 300
-    elif provider == 'minimax':
-        api_url = api_url or os.environ.get("MINIMAX_API_URL") or "https://api.minimax.io/v1"
-        provider = "openai"
 
     if attachments:
         for attachment in attachments:
@@ -2589,9 +2586,14 @@ def get_litellm_response(
       litellm.include_cost_in_streaming_usage = True
       api_params['stream_options'] = {"include_usage": True}
 
-    if api_url is not None and ('openai-like' in provider or provider == "openai-like" or provider == "openai"):
+    if api_url is not None and (
+        provider in ("openai", "openai-like")
+        or 'openai-like' in provider
+        or provider == "anthropic"
+    ):
         api_params["api_base"] = api_url
-        provider = "openai"
+        if provider != "anthropic":
+            provider = "openai"
     
     
     if provider =='enpisi' and api_url is None:

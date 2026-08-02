@@ -184,6 +184,10 @@ def resolve_model_provider(
         a_key = npc.api_key
     if a_key is None and team is not None and getattr(team, 'api_key', None) is not None:
         a_key = team.api_key
+    if p == "minimax":
+        a_url = a_url or os.environ.get("MINIMAX_API_URL") or "https://api.minimax.io/v1"
+        p = "anthropic" if a_url.rstrip("/").endswith("/anthropic") else "openai"
+        a_key = a_key or os.environ.get("MINIMAX_API_KEY")
     return m, p, a_url, a_key
 
 

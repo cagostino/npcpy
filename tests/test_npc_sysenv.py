@@ -61,6 +61,18 @@ GEMINI_API_KEY=test-gemini-key
             shutil.rmtree(temp_dir)
 
 
+class TestMiniMaxProvider:
+    """Test MiniMax model registration in npc_sysenv."""
+
+    def test_target_models_use_minimax_provider(self):
+        """Both target model IDs should be registered with MiniMax."""
+        from npcpy.npc_sysenv import MINIMAX_MODELS, lookup_provider
+
+        assert MINIMAX_MODELS == frozenset({"MiniMax-M3", "MiniMax-M2.7"})
+        assert lookup_provider("MiniMax-M3") == "minimax"
+        assert lookup_provider("MiniMax-M2.7") == "minimax"
+
+
 class TestPlatformDetection:
     """Test platform detection variables."""
 
