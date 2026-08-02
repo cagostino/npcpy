@@ -52,17 +52,6 @@ except ImportError:
 except OSError:
     pass
 
-
-def _resolve_minimax_api(api_url: str = None) -> tuple[str, str]:
-    base_url = (
-        api_url
-        or os.environ.get("MINIMAX_API_URL")
-        or "https://api.minimax.io/v1"
-    ).rstrip("/")
-    protocol = "anthropic" if base_url.endswith("/anthropic") else "openai"
-    return base_url, protocol
-
-
 def sanitize_messages(messages: list) -> list:
     """Remove orphaned tool_use and tool_result blocks from message history.
 
@@ -2345,7 +2334,6 @@ def get_litellm_response(
 ) -> Dict[str, Any]:
     if not model:
         raise ValueError("No model specified. Please set a model in your NPC configuration or team settings.")
-    is_minimax_route = provider == "minimax"
     result = {
         "response": None,
         "messages": messages.copy() if messages else [],
@@ -2472,9 +2460,6 @@ def get_litellm_response(
         api_key = api_key or "omlx"
         if 'timeout' not in kwargs:
             kwargs['timeout'] = 300
-    elif provider == 'minimax':
-        api_url, provider = _resolve_minimax_api(api_url)
-        api_key = api_key or os.environ.get("MINIMAX_API_KEY")
 
     if attachments:
         for attachment in attachments:
@@ -2602,10 +2587,9 @@ def get_litellm_response(
       api_params['stream_options'] = {"include_usage": True}
 
     if api_url is not None and (
-        'openai-like' in provider
-        or provider == "openai-like"
-        or provider == "openai"
-        or (is_minimax_route and provider == "anthropic")
+        provider in ("openai", "openai-like")
+        or 'openai-like' in provider
+        or provider == "anthropic"
     ):
         api_params["api_base"] = api_url
         if provider != "anthropic":
