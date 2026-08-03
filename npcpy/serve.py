@@ -4991,6 +4991,8 @@ def stream():
             prompt = commandstr
             total_input_tokens = 0
             total_output_tokens = 0
+            stop_requested = False
+            tools_executed = False
             while iteration < 10:
                 iteration += 1
                 print(f"[MCP] iteration {iteration} prompt len={len(prompt)}")
@@ -5050,8 +5052,14 @@ IMPORTANT AGENT BEHAVIOR:
                                             arg_str = json.dumps(arg_str)
                                         elif arg_str is None:
                                             arg_str = "{}"
+                                        # If the provider reuses the same id (e.g. 'call_0'),
+                                        # force a unique id per distinct call.
+                                        final_tc_id = tc_id or f"call_{len(collected_tool_calls)}"
+                                        seen_ids = {tc.get("id") for tc in collected_tool_calls}
+                                        if final_tc_id in seen_ids:
+                                            final_tc_id = f"{final_tc_id}_{len(collected_tool_calls)}"
                                         collected_tool_calls.append({
-                                            "id": tc_id or f"call_{len(collected_tool_calls)}",
+                                            "id": final_tc_id,
                                             "type": "function",
                                             "function": {"name": tc_name, "arguments": arg_str}
                                         })
@@ -5118,7 +5126,6 @@ IMPORTANT AGENT BEHAVIOR:
                                     if getattr(fn, "arguments", None):
                                         collected_tool_calls[idx]["function"]["arguments"] += fn.arguments
                 if not collected_tool_calls:
-                    print("[MCP] no tool calls, finishing streaming loop")
                     if last_response_chunk is not None:
                         chunk_usage = getattr(last_response_chunk, 'usage', None)
                         if chunk_usage is None and isinstance(last_response_chunk, dict):
@@ -5134,7 +5141,31 @@ IMPORTANT AGENT BEHAVIOR:
                             total_input_tokens += prompt_eval
                         if eval_count:
                             total_output_tokens += eval_count
+
+                    if stop_requested:
+                        print("[MCP] stop requested, finishing streaming loop")
+                        break
+
+                    if tools_executed and iteration < 10:
+                        print("[MCP] no tool calls after prior tools; re-prompting to continue")
+                        messages.append({"role": "assistant", "content": collected_content})
+                        messages.append({
+                            "role": "user",
+                            "content": "Continue working on the task autonomously. If the task is fully complete, call the stop jinx. Otherwise, take the next necessary action. Do not ask the user what to do."
+                        })
+                        prompt = ""
+                        continue
+
+                    print("[MCP] no tool calls, finishing streaming loop")
                     break
+
+                # Ensure every collected tool call has a unique id so the frontend
+                # doesn't collapse distinct calls into one.
+                for i, tc in enumerate(collected_tool_calls):
+                    if not tc.get("id"):
+                        tc["id"] = f"call_{iteration}_{i}_{uuid.uuid4().hex[:8]}"
+                        print(f"[MCP] assigned tool call id: {tc['id']} for {tc['function'].get('name')}")
+
                 print(f"[MCP] collected tool calls: {[tc['function']['name'] for tc in collected_tool_calls]}")
                 serialized_tool_calls = []
                 for tc in collected_tool_calls:
@@ -5219,6 +5250,8 @@ IMPORTANT AGENT BEHAVIOR:
                     yield {"type": "tool_start", "name": tool_name, "id": tool_id, "args": tool_args}
                     try:
                         tool_content = ""
+                        tool_failed = False
+                        tools_executed = True
                         if executor:
                             if executor["type"] == "jinx":
                                 jinx_obj = executor["jinx"]
@@ -5228,7 +5261,11 @@ IMPORTANT AGENT BEHAVIOR:
                                         npc=npc_object
                                     )
                                     tool_content = str(jinx_ctx.get('output', '')) if isinstance(jinx_ctx, dict) else str(jinx_ctx)
+                                    if isinstance(jinx_ctx, dict) and jinx_ctx.get('stop_requested'):
+                                        stop_requested = True
+                                        print(f"[MCP] stop_requested set by jinx '{tool_name}'")
                                 except Exception as e:
+                                    tool_failed = True
                                     tool_content = f"Jinx execution error: {str(e)}"
                             elif executor["type"] == "mcp":
                                 try:
@@ -5245,6 +5282,7 @@ IMPORTANT AGENT BEHAVIOR:
                                         tool_content = str(result) if result is not None else "Tool returned no result"
                                     print(f"[MCP] Final tool_content: {tool_content}")
                                 except Exception as mcp_e:
+                                    tool_failed = True
                                     print(f"[MCP] Tool exception: {mcp_e}")
                                     traceback.print_exc()
                                     tool_content = f"MCP tool error: {str(mcp_e)}"
@@ -5252,8 +5290,10 @@ IMPORTANT AGENT BEHAVIOR:
                                 try:
                                     tool_content = str(executor["func"](**(tool_args if isinstance(tool_args, dict) else {})))
                                 except Exception as py_e:
+                                    tool_failed = True
                                     tool_content = f"Python tool error: {str(py_e)}"
                         else:
+                            tool_failed = True
                             tool_content = f"Tool '{tool_name}' not found in resolved tools"
                         messages.append({
                             "role": "tool",
@@ -5266,8 +5306,12 @@ IMPORTANT AGENT BEHAVIOR:
                             "tool_call_id": tool_id,
                             "content": tool_content
                         })
-                        print(f"[MCP] tool_result {tool_name}: {tool_content}")
-                        yield {"type": "tool_result", "name": tool_name, "id": tool_id, "result": tool_content}
+                        if tool_failed:
+                            print(f"[MCP] tool_error {tool_name}: {tool_content}")
+                            yield {"type": "tool_error", "name": tool_name, "id": tool_id, "error": tool_content}
+                        else:
+                            print(f"[MCP] tool_result {tool_name}: {tool_content}")
+                            yield {"type": "tool_result", "name": tool_name, "id": tool_id, "result": tool_content}
                     except Exception as e:
                         error_msg = f"Tool execution error: {str(e)}"
                         print(f"[MCP] tool_error {tool_name}: {error_msg}")
