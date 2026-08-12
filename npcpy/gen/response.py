@@ -1072,7 +1072,7 @@ Do not include any additional markdown formatting or leading ```json tags in you
 
         max_tokens = kwargs.get("max_tokens", kwargs.get("max_new_tokens", 512))
         temperature = kwargs.get("temperature", 0.7)
-        top_p = kwargs.get("top_p", 0.9)
+        top_p = kwargs.get("top_p", 0.0)
         sampler = make_sampler(temp=temperature, top_p=top_p)
         out = mlx_generate(
             mlx_model, tokenizer, prompt=chat_text,
@@ -2257,7 +2257,7 @@ Do not include any additional markdown formatting or leading ```json tags in you
     max_new_tokens = kwargs.pop("max_tokens", kwargs.pop("max_new_tokens", 256))
     temperature = kwargs.pop("temperature", 0.7)
     top_k = kwargs.pop("top_k", 50)
-    top_p = kwargs.pop("top_p", 0.9)
+    top_p = kwargs.pop("top_p", 0.0)
     repetition_penalty = kwargs.pop("repetition_penalty", 1.15)
 
     if stream:
