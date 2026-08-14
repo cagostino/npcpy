@@ -40,7 +40,7 @@ base_requirements = [
     "pandas",
     "polars",
     "beautifulsoup4",
-    "duckduckgo-search",
+    "ddgs>=9.0.0",
     "flask",
     "flask_cors",
     "redis",

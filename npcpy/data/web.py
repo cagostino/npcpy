@@ -4,8 +4,7 @@ import requests
 import os
 
 from bs4 import BeautifulSoup
-from duckduckgo_search import DDGS
-from duckduckgo_search.exceptions import DuckDuckGoSearchException
+from ddgs import DDGS
 
 try:
     from googlesearch import search as _google_search
@@ -226,16 +225,13 @@ def search_web(
         provider = 'duckduckgo'
 
     if provider == "duckduckgo":
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0"
-        }
         try:
-            ddgs = DDGS(headers=headers)
-            search_results = ddgs.text(query, max_results=num_results)
-            results = [
-                {"title": r["title"], "link": r["href"], "content": r["body"]}
-                for r in search_results
-            ]
+            with DDGS() as ddgs:
+                search_results = ddgs.text(query, max_results=num_results)
+                results = [
+                    {"title": r["title"], "link": r["href"], "content": r["body"]}
+                    for r in search_results
+                ]
         except Exception as e:
             print("DuckDuckGo search failed: ", e)
             results = []

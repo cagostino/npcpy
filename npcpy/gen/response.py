@@ -139,7 +139,7 @@ def sanitize_messages(messages: list) -> list:
     return merged
 
 
-def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
+def calculate_cost(model: str, input_tokens: int, output_tokens: int, provider: str = None) -> float:
     """Calculate cost in USD for a response using litellm's model cost database."""
     if not model or input_tokens < 0 or output_tokens < 0:
         return 0.0
@@ -161,9 +161,9 @@ def calculate_cost(model: str, input_tokens: int, output_tokens: int) -> float:
 
     # Try with provider prefix (e.g. openai/gpt-4o)
     try:
-        provider = lookup_provider(model)
-        if provider:
-            info = litellm.get_model_info(f"{provider}/{model}")
+        resolved_provider = provider or lookup_provider(model)
+        if resolved_provider:
+            info = litellm.get_model_info(f"{resolved_provider}/{model}")
             cost = _cost_from_info(info)
             if cost is not None:
                 return cost
