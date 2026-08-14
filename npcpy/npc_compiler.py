@@ -20,7 +20,17 @@ from typing import Any, Dict, List, Optional, Union, Callable, Tuple
 from jinja2 import Environment, FileSystemLoader, Template, Undefined, DictLoader
 from jinja2.sandbox import SandboxedEnvironment
 from sqlalchemy import create_engine, text
-import npcpy as npy 
+import npcpy as npy
+# Make the npcpy package importable from jinx python steps, which may run in a
+# fresh interpreter without npcpy on sys.path. Deriving the path from the package
+# itself (rather than hardcoding a machine-specific path) keeps jinxes portable.
+try:
+    _npcpy_pkg_dir = os.path.dirname(os.path.abspath(npy.__file__))
+    _npcpy_parent = os.path.dirname(_npcpy_pkg_dir)
+    if _npcpy_parent not in sys.path:
+        sys.path.insert(0, _npcpy_parent)
+except Exception:
+    pass
 from npcpy.tools import auto_tools
 import math
 import random

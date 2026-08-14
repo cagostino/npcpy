@@ -5330,7 +5330,7 @@ IMPORTANT AGENT BEHAVIOR:
                 tool_results_for_db = tool_results
                 prompt = ""
             app.mcp_clients[state_key]["messages"] = messages
-            mcp_cost = calculate_cost(model, total_input_tokens, total_output_tokens) if total_input_tokens or total_output_tokens else 0
+            mcp_cost = calculate_cost(model, total_input_tokens, total_output_tokens, provider=provider) if total_input_tokens or total_output_tokens else 0
             if total_input_tokens or total_output_tokens:
                 yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "cost": mcp_cost or 0}
             return
@@ -5609,7 +5609,7 @@ IMPORTANT AGENT BEHAVIOR:
             print('\r' + ' ' * dot_count*2 + '\r', end="", flush=True)
             final_response_text = ''.join(complete_response)
             if total_input_tokens or total_output_tokens:
-                stream_cost = calculate_cost(model, total_input_tokens, total_output_tokens) if total_input_tokens or total_output_tokens else 0
+                stream_cost = calculate_cost(model, total_input_tokens, total_output_tokens, provider=provider) if total_input_tokens or total_output_tokens else 0
                 yield f"data: {json.dumps({'type': 'usage', 'input_tokens': total_input_tokens, 'output_tokens': total_output_tokens, 'cost': stream_cost or 0})}\n\n"
             yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
             _cleanup_stream(current_stream_id, getattr(app, '_last_mcp_state_key', None))

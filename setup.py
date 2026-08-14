@@ -40,7 +40,7 @@ base_requirements = [
     "pandas",
     "polars",
     "beautifulsoup4",
-    "duckduckgo-search",
+    "ddgs>=9.0.0",
     "flask",
     "flask_cors",
     "redis",
@@ -85,7 +85,7 @@ extra_files = package_files("npcpy/npc_team/")
 
 setup(
     name="npcpy",
-    version="2.1.12",
+    version="2.1.13",
     packages=find_packages(exclude=["tests*"]),
     install_requires=base_requirements,  
     extras_require={
