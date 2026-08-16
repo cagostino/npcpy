@@ -1064,15 +1064,14 @@ Full documentation, guides, and API reference at [npcpy.readthedocs.io](https://
 
 - **[Incognide](https://github.com/npc-worldwide/incognide)** — Desktop environment with AI chat, browser, file viewers, code editor, terminal, knowledge graphs, team management, and more ([download](https://enpisi.com/incognide))
 - **[NPC Shell](https://github.com/npc-worldwide/npcsh)** — Command-line shell for interacting with NPCs
-- **[Newsletter](https://forms.gle/n1NzQmwjsV4xv1B2A)** — Stay in the loop
+
 
 ## Research
 
 - A Quantum Semantic Framework for natural language processing: [arxiv](https://arxiv.org/abs/2506.10077), accepted at [QNLP 2025](https://qnlp.ai)
-- Simulating hormonal cycles for AI: [arxiv](https://arxiv.org/abs/2508.11829)
-- TinyTim: A Family of Language Models for Divergent Generation [arxiv](https://arxiv.org/abs/2508.11607)
-- The production of meaning in the processing of natural language: [arxiv](https://arxiv.org/abs/2603.20381)
-- ALARA for Agents: Least-Privilege Context Engineering Through Portable Composable Multi-Agent Teams: [arxiv](https://arxiv.org/abs/2603.20380)
+- TinyTim: A Family of Language Models for Divergent Generation [arxiv](https://arxiv.org/abs/2508.11607), accepted at NeurIPS 2025 Creative AI Track
+- The production of meaning in the processing of natural language: [arxiv](https://arxiv.org/abs/2603.20381), accepted at [QNLP 2026](https://qnlp.ai)
+- ALARA for Agents: Least-Privilege Context Engineering Through Portable Composable Multi-Agent Teams: [arxiv](https://arxiv.org/abs/2603.20380), accepted at [HAXD 2026](https://intelligent-systems.net/haxd2026/)
 
 Has your research benefited from npcpy? Let us know!
 
