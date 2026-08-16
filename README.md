@@ -1090,4 +1090,4 @@ MIT License.
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=cagostino/npcpy&type=Date)](https://star-history.com/#cagostino/npcpy&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=cagostino/npcpy&type=Date)](https://star-history.dera.page/#cagostino/npcpy&Date)
