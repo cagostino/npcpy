@@ -2671,7 +2671,7 @@ class Team:
               {{ Jinx('kg_search_keyword', path='/abs/team/root') }}  — same, keyword
               {{ Jinx('kg_search_keyword', repo='owner/repo') }}
                   — foreign team in a GitHub repo; cached to
-                    ~/.cache/npcpy/jinxes/<owner>_<repo>[@<ref>]/ on first use
+                    ~/.cache/npc_teams/<owner>_<repo>[@<ref>]/ on first use
               {{ Jinx('x', repo='owner/repo', ref='v1.2.0') }}        — pin a branch/tag
 
             Foreign jinxes are loaded into this team's pool on first resolve,
@@ -2702,7 +2702,7 @@ class Team:
         def _resolve_external_team_root(repo=None, path=None, ref=None):
             """Return a local filesystem path to a team root (directory containing
             a jinxes/ folder), fetching from GitHub if needed. Caches under
-            ~/.cache/npcpy/jinxes/. Looks recursively for a directory named
+            ~/.cache/npc_teams/. Looks recursively for a directory named
             npc_team inside the cloned repo."""
             if path:
                 expanded = os.path.expanduser(path)
@@ -2711,7 +2711,7 @@ class Team:
             if not repo:
                 return None
 
-            cache_root = os.path.expanduser('~/.cache/npcpy/jinxes')
+            cache_root = os.path.expanduser('~/.cache/npc_teams')
             os.makedirs(cache_root, exist_ok=True)
             slug = repo.replace('/', '_')
             if ref:
