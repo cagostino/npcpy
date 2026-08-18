@@ -195,6 +195,7 @@ AirLLM loads and processes model layers sequentially, allowing you to run models
 |----------|--------------|-------|
 | `ollama` | `llama3.2`, `gemma3:4b` | Local models, default provider |
 | `openai` | `gpt-4o`, `gpt-4o-mini` | Requires `OPENAI_API_KEY` |
+| `openai` | `orcarouter/auto` | [OrcaRouter](https://www.orcarouter.ai) gateway: set `api_url` to `https://api.orcarouter.ai/v1` with a `sk-orca-` key |
 | `anthropic` | `claude-sonnet-4` | Requires `ANTHROPIC_API_KEY` |
 | `gemini` | `gemini-2.0-flash` | Requires `GEMINI_API_KEY` |
 | `deepseek` | `deepseek-chat`, `deepseek-reasoner` | Requires `DEEPSEEK_API_KEY` |
