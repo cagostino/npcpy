@@ -667,16 +667,22 @@ def cross_validate(
 
 def serialize_model(model: Any, path: str, format: str = "joblib") -> None:
     """
-    Serialize model to file using safe formats (no pickle).
+    Serialize model to file.
 
     Args:
         model: The model to serialize
         path: File path to write to (required)
-        format: Serialization format - "joblib" (default) or "safetensors"
+        format: Serialization format - "joblib" (default, pickle-based) or
+            "safetensors" (PyTorch state_dict only)
 
     Raises:
         ImportError: If required library is not installed
         ValueError: If format is not supported for the model type
+
+    Note:
+        "joblib" uses joblib.dump, which pickles the model. Load a ".joblib"
+        file back with deserialize_model(..., trust_source=True) only from a
+        source you trust; see deserialize_model for why.
     """
     if format == "safetensors":
         from safetensors.torch import save_file
@@ -690,20 +696,29 @@ def serialize_model(model: Any, path: str, format: str = "joblib") -> None:
     else:
         raise ValueError(f"Unsupported format: {format}. Use 'joblib' or 'safetensors'.")
 
-def deserialize_model(path: str, format: str = "auto") -> Any:
+def deserialize_model(path: str, format: str = "auto", trust_source: bool = False) -> Any:
     """
-    Deserialize model from file using safe formats (no pickle).
+    Deserialize model from file.
 
     Args:
         path: File path to load from
         format: "auto" (detect from extension), "joblib", or "safetensors"
+        trust_source: Must be True to load a "joblib" file. joblib.load is a
+            thin wrapper over pickle.load and can execute arbitrary Python
+            code embedded in the file (per joblib's own docs: "joblib.load
+            relies on the pickle module and can therefore execute arbitrary
+            Python code. It should therefore never be used to load files
+            from untrusted sources."). Only pass trust_source=True for a file
+            you produced yourself or otherwise trust. "safetensors" carries
+            no such risk and does not need the flag.
 
     Returns:
         The deserialized model
 
     Raises:
         ImportError: If required library is not installed
-        ValueError: If format cannot be determined
+        ValueError: If format cannot be determined, or a "joblib" file is
+            loaded without trust_source=True
     """
     if format == "auto":
         if path.endswith('.safetensors'):
@@ -717,6 +732,14 @@ def deserialize_model(path: str, format: str = "auto") -> Any:
         from safetensors.torch import load_file
         return load_file(path)
     elif format == "joblib":
+        if not trust_source:
+            raise ValueError(
+                "Refusing to load a 'joblib' file without trust_source=True: "
+                "joblib.load executes arbitrary Python code embedded in the "
+                "file. Pass deserialize_model(path, trust_source=True) only "
+                "after confirming you trust the source, or re-save the model "
+                "with format='safetensors' if it doesn't need trust."
+            )
         import joblib
         return joblib.load(path)
     else:

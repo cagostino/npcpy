@@ -226,7 +226,7 @@ class TestModelSerialization:
         try:
             model_path = os.path.join(temp_dir, "model.joblib")
             serialize_model(model, model_path, format="joblib")
-            loaded = deserialize_model(model_path)
+            loaded = deserialize_model(model_path, trust_source=True)
 
             assert loaded is not None
             # Check predictions match
@@ -253,12 +253,44 @@ class TestModelSerialization:
         try:
             model_path = os.path.join(temp_dir, "model.joblib")
             serialize_model(model, model_path)  # default format
-            loaded = deserialize_model(model_path, format="auto")
+            loaded = deserialize_model(model_path, format="auto", trust_source=True)
 
             assert loaded is not None
             orig_pred = model.predict([[4]])
             loaded_pred = loaded.predict([[4]])
             assert np.allclose(orig_pred, loaded_pred)
+        finally:
+            import shutil
+            shutil.rmtree(temp_dir)
+
+    def test_deserialize_model_joblib_requires_trust_source(self):
+        """A 'joblib' file must not load without trust_source=True.
+
+        joblib.load is a pickle wrapper: it runs whatever __reduce__ the file
+        embeds. deserialize_model must refuse by default rather than execute
+        an arbitrary callable found in an untrusted file.
+        """
+        pytest.importorskip("joblib")
+        import joblib
+        from npcpy.ml_funcs import deserialize_model
+
+        class ArbitraryCallable:
+            def __reduce__(self):
+                # Any callable+args would run here; os.getpid is inert and
+                # only serves to prove the reduce path executes.
+                return (os.getpid, ())
+
+        temp_dir = tempfile.mkdtemp()
+        try:
+            model_path = os.path.join(temp_dir, "untrusted.joblib")
+            joblib.dump(ArbitraryCallable(), model_path)
+
+            with pytest.raises(ValueError, match="trust_source"):
+                deserialize_model(model_path, format="joblib")
+
+            # Explicit opt-in still works (the mechanism itself is unchanged).
+            result = deserialize_model(model_path, format="joblib", trust_source=True)
+            assert result == os.getpid()
         finally:
             import shutil
             shutil.rmtree(temp_dir)
