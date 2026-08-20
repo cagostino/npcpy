@@ -1120,6 +1120,16 @@ def build_jinx_tool_catalog(jinxes: Dict[str, 'Jinx']) -> Dict[str, Dict[str, An
     """Helper to build a name->tool_def catalog from a dict of Jinx objects."""
     return {name: jinx_to_tool_def(jinx_obj) for name, jinx_obj in jinxes.items()}
 
+def _get_standard_jinxes_directory() -> Optional[str]:
+    """Return the npcpy package's built-in jinxes directory, if it exists."""
+    try:
+        import npcpy as npy
+        pkg_dir = os.path.dirname(os.path.abspath(npy.__file__))
+        stdlib = os.path.join(pkg_dir, 'npc_team', 'jinxes')
+        return stdlib if os.path.isdir(stdlib) else None
+    except Exception:
+        return None
+
 def match_jinx_spec_to_names(jinx_spec: str, team_jinxes_dict: Dict[str, 'Jinx'], jinxes_base_dir: str, jinx_path_map: dict = None) -> List[str]:
     """
     Match a jinx spec to actual jinx names from the team's jinxes_dict.
