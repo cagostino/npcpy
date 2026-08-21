@@ -216,7 +216,6 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
         os.path.expanduser('~/models'),
         os.path.expanduser('~/.cache/huggingface/hub'),
         os.path.expanduser('~/.lmstudio/models'),
-        os.path.expanduser('~/.incognide/models'),
     ]
     resolved_gguf = gguf_dir or os.environ.get('GGUF_DIR')
     if resolved_gguf:

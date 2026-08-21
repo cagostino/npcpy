@@ -510,67 +510,64 @@ def load_project_env(current_path):
     else:
         print(f"No .env file found at {env_path}")
     return loaded_vars
-def _load_kg_from_yaml_stores(store_paths):
+
+
+def _get_registered_stores():
+    """Read the configured KG registry YAML and return store directory paths."""
+    registry_path = app.config.get('KG_REGISTRY_PATH')
+    stores = []
+    if registry_path:
+        registry_path = os.path.expanduser(registry_path)
+        if os.path.exists(registry_path):
+            try:
+                with open(registry_path, 'r') as f:
+                    data = yaml.safe_load(f) or {}
+                stores = [str(s) for s in data.get('stores', []) if isinstance(s, str) and s]
+            except Exception:
+                pass
+    return stores
+
+
+def load_kg_data(store_paths=None):
     """Aggregate .knowledge.yaml stores from explicit paths into DataFrames."""
     from npcpy.memory.knowledge_store import KnowledgeStore
+    store_paths = store_paths or _get_registered_stores()
     concepts = []
     facts = []
     links = []
     for store_dir in store_paths:
-        store = KnowledgeStore(store_dir)
-        data = store.load()
-        for c in data.get('concepts', []):
-            concepts.append({
-                'name': c.get('name'),
-                'description': c.get('description', ''),
-                'generation': c.get('generation', 0),
-                'created_at': c.get('created_at'),
-            })
-        for m in data.get('memories', []):
-            stmt = m.get('final_memory') or m.get('initial_memory', '')
-            if stmt:
-                facts.append({
-                    'statement': stmt,
-                    'source_text': m.get('source_id', ''),
-                    'type': m.get('source_type', 'memory'),
-                    'generation': 0,
-                    'memory_id': m.get('id'),
-                    'npc_name': m.get('npc', ''),
-                    'team_name': m.get('team', ''),
+        for store in KnowledgeStore.find_all(store_dir):
+            data = store.load()
+            for c in data.get('concepts', []):
+                concepts.append({
+                    'name': c.get('name'),
+                    'description': c.get('description', ''),
+                    'generation': c.get('generation', 0),
+                    'created_at': c.get('created_at'),
                 })
-        for l in data.get('links', []):
-            links.append({
-                'source': l.get('from'),
-                'target': l.get('to'),
-                'link_type': l.get('type', 'memory_to_memory'),
-                'weight': 1,
-            })
+            for m in data.get('memories', []):
+                stmt = m.get('final_memory') or m.get('initial_memory', '')
+                if stmt:
+                    facts.append({
+                        'statement': stmt,
+                        'source_text': m.get('source_id', ''),
+                        'type': m.get('source_type', 'memory'),
+                        'generation': 0,
+                        'memory_id': m.get('id'),
+                        'npc_name': m.get('npc', ''),
+                        'team_name': m.get('team', ''),
+                    })
+            for l in data.get('links', []):
+                links.append({
+                    'source': l.get('from'),
+                    'target': l.get('to'),
+                    'link_type': l.get('type', 'memory_to_memory'),
+                    'weight': 1,
+                })
     concepts_df = pd.DataFrame(concepts) if concepts else pd.DataFrame(columns=['name', 'description', 'generation', 'created_at'])
     facts_df = pd.DataFrame(facts) if facts else pd.DataFrame(columns=['statement', 'source_text', 'type', 'generation', 'memory_id', 'npc_name', 'team_name'])
     links_df = pd.DataFrame(links) if links else pd.DataFrame(columns=['source', 'target', 'link_type', 'weight'])
     return concepts_df, facts_df, links_df
-def _load_kg_from_yaml(workspace):
-    """DEPRECATED — kept for backward compat until callers migrate to storePaths."""
-    return _load_kg_from_yaml_stores([])
-def load_kg_data(store_paths=None):
-    """Load KG data from a specific list of .knowledge.yaml store directories.
-    store_paths is a list of directory paths."""
-    return _load_kg_from_yaml_stores(store_paths or [])
-def _get_registered_stores():
-    """Read the configured KG registry YAML and return store directory paths."""
-    registry_path = app.config.get('KG_REGISTRY_PATH')
-    if not registry_path:
-        return []
-    registry_path = os.path.expanduser(registry_path)
-    if not os.path.exists(registry_path):
-        return []
-    try:
-        with open(registry_path, 'r') as f:
-            data = yaml.safe_load(f) or {}
-        stores = data.get('stores', [])
-        return [str(s) for s in stores if isinstance(s, str) and s]
-    except Exception:
-        return []
 app = Flask(__name__)
 app.config["REDIS_URL"] = "redis://localhost:6379"
 app.config['DB_PATH'] = ''
@@ -1183,52 +1180,58 @@ def run_kg_pipeline():
         return jsonify({"error": "step and storePaths are required"}), 400
     def generate():
         job_id = data.get('jobId', f"kg_{int(time.time()*1000)}")
-        for store_dir in store_paths:
-            store = KnowledgeStore(store_dir)
-            yield json.dumps({
-                "jobId": job_id,
-                "kind": "start",
-                "message": f"Starting {step} on {store_dir}",
-                "timestamp": int(time.time() * 1000),
-            }) + "\n"
-            try:
-                if step == 'create':
-                    result = store.create(model=model, provider=provider, npc=None, context=context, content_text=content_text)
-                elif step == 'assimilate':
-                    result = store.assimilate(model=model, provider=provider, npc=None, context=context)
-                elif step == 'sleep':
-                    result = store.sleep(model=model, provider=provider, npc=None, context=context, operations=operations)
-                elif step == 'dream':
-                    result = store.dream(model=model, provider=provider, npc=None, context=context, num_seeds=num_seeds)
-                else:
-                    yield json.dumps({
-                        "jobId": job_id,
-                        "kind": "error",
-                        "message": f"Unknown step: {step}",
-                        "timestamp": int(time.time() * 1000),
-                    }) + "\n"
-                    continue
-                yield json.dumps({
+        import queue
+        log_queue = queue.Queue()
+
+        def log_callback(message):
+            log_queue.put(('stdout', str(message)))
+
+        def run_steps():
+            for store_dir in store_paths:
+                store = KnowledgeStore(store_dir)
+                log_queue.put(('start', f"Starting {step} on {store_dir}"))
+                try:
+                    if step == 'create':
+                        result = store.create(model=model, provider=provider, npc=None, context=context, content_text=content_text)
+                    elif step == 'assimilate':
+                        result = store.assimilate(model=model, provider=provider, npc=None, context=context, log_callback=log_callback)
+                    elif step == 'sleep':
+                        result = store.sleep(model=model, provider=provider, npc=None, context=context, operations=operations)
+                    elif step == 'dream':
+                        result = store.dream(model=model, provider=provider, npc=None, context=context, num_seeds=num_seeds)
+                    else:
+                        log_queue.put(('error', f"Unknown step: {step}"))
+                        continue
+                    log_queue.put(('finish', f"Finished {step} on {store_dir}: {result.get('concepts_added', 0)} concepts, {result.get('links_added', 0)} links", result))
+                except Exception as e:
+                    traceback.print_exc()
+                    log_queue.put(('error', str(e)))
+            log_queue.put(('done', 'All stores processed'))
+            log_queue.put(None)
+
+        thread = threading.Thread(target=run_steps, daemon=True)
+        thread.start()
+
+        try:
+            while True:
+                item = log_queue.get()
+                if item is None:
+                    break
+                kind, message = item[0], item[1]
+                entry = {
                     "jobId": job_id,
-                    "kind": "finish",
-                    "message": f"Finished {step} on {store_dir}: {result.get('concepts_added', 0)} concepts, {result.get('links_added', 0)} links",
-                    "data": result,
+                    "kind": kind,
+                    "message": message,
                     "timestamp": int(time.time() * 1000),
-                }) + "\n"
-            except Exception as e:
-                traceback.print_exc()
-                yield json.dumps({
-                    "jobId": job_id,
-                    "kind": "error",
-                    "message": str(e),
-                    "timestamp": int(time.time() * 1000),
-                }) + "\n"
-        yield json.dumps({
-            "jobId": job_id,
-            "kind": "done",
-            "message": "All stores processed",
-            "timestamp": int(time.time() * 1000),
-        }) + "\n"
+                }
+                if len(item) > 2:
+                    entry["data"] = item[2]
+                yield json.dumps(entry) + "\n"
+                log_queue.task_done()
+            thread.join()
+        except Exception:
+            pass
+
     return Response(generate(), mimetype='application/x-ndjson')
 @app.route('/api/kg/query', methods=['POST'])
 def query_kg():
@@ -1560,39 +1563,58 @@ def knowledge_search():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+def _knowledge_stores(current_path):
+    from npcpy.memory.knowledge_store import KnowledgeStore
+    stores = KnowledgeStore.find_all(current_path)
+    if not stores:
+        stores = [KnowledgeStore(current_path)]
+    return stores
+
+
 @app.route("/api/knowledge/memories", methods=["GET"])
 def knowledge_memories():
-    """Get memories from local .knowledge.yaml with optional status filter."""
+    """Get memories recursively under a path with optional status filter."""
     try:
         current_path = request.args.get("currentPath", os.getcwd())
         status = request.args.get("status")
         limit = request.args.get("limit")
         limit = int(limit) if limit else None
-        from npcpy.memory.knowledge_store import KnowledgeStore
-        store = KnowledgeStore(current_path)
-        mems = store.get_memories(status=status, limit=limit)
+        mems = []
+        for store in _knowledge_stores(current_path):
+            for mem in store.get_memories(status=status, limit=None):
+                mem['_directory'] = store.directory
+                mems.append(mem)
+        if limit:
+            mems = mems[:limit]
         return jsonify({"memories": mems, "count": len(mems)})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 @app.route("/api/knowledge/links", methods=["GET"])
 def knowledge_links():
-    """Get links for a memory or all links from local .knowledge.yaml."""
+    """Get links for a memory or all links recursively under a path."""
     try:
         current_path = request.args.get("currentPath", os.getcwd())
         mem_id = request.args.get("mem_id")
-        from npcpy.memory.knowledge_store import KnowledgeStore
-        store = KnowledgeStore(current_path)
+        outgoing = []
+        incoming = []
+        all_links = []
+        for store in _knowledge_stores(current_path):
+            if mem_id:
+                result = store.get_links_for_memory(mem_id)
+                outgoing.extend(result.get('outgoing', []))
+                incoming.extend(result.get('incoming', []))
+            else:
+                all_links.extend(store.get_all_links())
         if mem_id:
-            result = store.get_links_for_memory(mem_id)
-            return jsonify(result)
-        return jsonify({"links": store.get_all_links()})
+            return jsonify({"outgoing": outgoing, "incoming": incoming})
+        return jsonify({"links": all_links})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 @app.route("/api/knowledge/link", methods=["POST"])
 def knowledge_link_create():
-    """Create a directed link in local .knowledge.yaml."""
+    """Create a directed link in the nearest .knowledge.yaml."""
     try:
         data = request.json or {}
         current_path = data.get("currentPath", os.getcwd())
@@ -1611,35 +1633,41 @@ def knowledge_link_create():
         return jsonify({"error": str(e)}), 500
 @app.route("/api/knowledge/context", methods=["GET"])
 def knowledge_context():
-    """Return formatted context string from local .knowledge.yaml."""
+    """Return formatted context string recursively under a path."""
     try:
         current_path = request.args.get("currentPath", os.getcwd())
         max_memories = int(request.args.get("max_memories", 10))
-        from npcpy.memory.knowledge_store import KnowledgeStore
-        store = KnowledgeStore(current_path)
-        ctx = store.build_context(max_memories=max_memories)
-        return jsonify({"context": ctx})
+        parts = []
+        seen = set()
+        for store in _knowledge_stores(current_path):
+            for mem in store.get_memories(status="human-approved", limit=max_memories):
+                txt = mem.get('final_memory') or mem.get('initial_memory')
+                if txt and txt not in seen:
+                    seen.add(txt)
+                    parts.append(f"- {txt}")
+                    if len(parts) >= max_memories:
+                        break
+            if len(parts) >= max_memories:
+                break
+        return jsonify({"context": "\n".join(parts) if parts else ""})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 @app.route("/api/knowledge/all_memories", methods=["GET"])
 def knowledge_all_memories():
     """Return aggregated memories from all registered knowledge stores."""
+    from npcpy.memory.knowledge_store import KnowledgeStore
     try:
         limit = request.args.get("limit")
         limit = int(limit) if limit else None
-        from npcpy.memory.knowledge_store import KnowledgeStore
         dirs = _get_registered_stores()
         all_memories = []
         for d in dirs:
-            fp = os.path.join(d, ".knowledge.yaml")
-            if not os.path.exists(fp):
-                continue
-            store = KnowledgeStore(d)
-            data = store.load()
-            for mem in data.get("memories", []):
-                mem["_directory"] = d
-                all_memories.append(mem)
+            for store in KnowledgeStore.find_all(d):
+                data = store.load()
+                for mem in data.get('memories', []):
+                    mem["_directory"] = mem.get('_directory') or store.directory
+                    all_memories.append(mem)
         if limit:
             all_memories = all_memories[:limit]
         return jsonify({"memories": all_memories, "count": len(all_memories), "sources": len(dirs)})
@@ -1649,32 +1677,39 @@ def knowledge_all_memories():
 @app.route("/api/knowledge/all_search", methods=["GET"])
 def knowledge_all_search():
     """Search across all registered knowledge stores."""
+    from npcpy.memory.knowledge_store import KnowledgeStore
     try:
         q = request.args.get("q", "").lower()
         limit = int(request.args.get("limit", 20))
-        from npcpy.memory.knowledge_store import KnowledgeStore
         dirs = _get_registered_stores()
         results = []
         for d in dirs:
-            fp = os.path.join(d, ".knowledge.yaml")
-            if not os.path.exists(fp):
-                continue
-            store = KnowledgeStore(d)
-            data = store.load()
-            for mem in data.get("memories", []):
-                txt = (mem.get("initial_memory", "") + " " + mem.get("final_memory", "")).lower()
-                if q in txt:
-                    mem["_directory"] = d
-                    results.append(mem)
+            for store in KnowledgeStore.find_all(d):
+                data = store.load()
+                for mem in data.get('memories', []):
+                    txt = (mem.get("initial_memory", "") + " " + mem.get("final_memory", "")).lower()
+                    if q in txt:
+                        mem["_directory"] = mem.get('_directory') or store.directory
+                        results.append(mem)
             if len(results) >= limit:
                 break
         return jsonify({"memories": results[:limit], "count": len(results[:limit])})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+def _find_store_with_memory(root_path, mem_id):
+    from npcpy.memory.knowledge_store import KnowledgeStore
+    stores = KnowledgeStore.find_all(root_path)
+    for store in stores:
+        data = store.load()
+        if any(m.get('id') == mem_id for m in data.get('memories', [])):
+            return store
+    return KnowledgeStore(root_path)
+
+
 @app.route("/api/knowledge/memory/update", methods=["POST"])
 def knowledge_memory_update():
-    """Update a memory's status and/or final_memory in local .knowledge.yaml."""
+    """Update a memory's status and/or final_memory in the correct sub-store."""
     try:
         data = request.json or {}
         current_path = data.get("currentPath", os.getcwd())
@@ -1683,8 +1718,7 @@ def knowledge_memory_update():
         final_memory = data.get("final_memory")
         if not mem_id or not status:
             return jsonify({"error": "id and status are required"}), 400
-        from npcpy.memory.knowledge_store import KnowledgeStore
-        store = KnowledgeStore(current_path)
+        store = _find_store_with_memory(current_path, mem_id)
         changed = store.update_memory(mem_id, status, final_memory)
         return jsonify({"success": changed})
     except Exception as e:
@@ -1692,15 +1726,14 @@ def knowledge_memory_update():
         return jsonify({"error": str(e)}), 500
 @app.route("/api/knowledge/memory/delete", methods=["POST"])
 def knowledge_memory_delete():
-    """Delete a memory from local .knowledge.yaml."""
+    """Delete a memory from the correct sub-store."""
     try:
         data = request.json or {}
         current_path = data.get("currentPath", os.getcwd())
         mem_id = data.get("id")
         if not mem_id:
             return jsonify({"error": "id is required"}), 400
-        from npcpy.memory.knowledge_store import KnowledgeStore
-        store = KnowledgeStore(current_path)
+        store = _find_store_with_memory(current_path, mem_id)
         data_yaml = store.load()
         original_len = len(data_yaml.get("memories", []))
         data_yaml["memories"] = [m for m in data_yaml.get("memories", []) if m.get("id") != mem_id]
@@ -4993,9 +5026,20 @@ def stream():
             total_output_tokens = 0
             stop_requested = False
             tools_executed = False
-            while iteration < 10:
+            max_agent_iterations = data.get('maxAgentIterations')
+            if max_agent_iterations is not None:
+                try:
+                    max_agent_iterations = int(max_agent_iterations)
+                    if max_agent_iterations < 1:
+                        max_agent_iterations = 1
+                except (ValueError, TypeError):
+                    max_agent_iterations = None
+            if max_agent_iterations is None:
+                max_agent_iterations = 10000
+            print(f"[MCP] max_agent_iterations={max_agent_iterations}")
+            while iteration < max_agent_iterations:
                 iteration += 1
-                print(f"[MCP] iteration {iteration} prompt len={len(prompt)}")
+                print(f"[MCP] iteration {iteration}/{max_agent_iterations} prompt len={len(prompt)}")
                 print(f"[MCP] tools_for_llm: {[t['function']['name'] for t in tools_for_llm]}")
                 agent_context = f'''The user's working directory is {current_path}
 IMPORTANT AGENT BEHAVIOR:
@@ -5636,9 +5680,17 @@ def approve_memories():
         return jsonify({"success": True, "processed": len(approvals)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+def _memory_stores(directory_path):
+    from npcpy.memory.knowledge_store import KnowledgeStore
+    stores = KnowledgeStore.find_all(directory_path)
+    if not stores:
+        stores = [KnowledgeStore(directory_path)]
+    return stores
+
+
 @app.route("/api/memory/search", methods=["GET"])
 def search_memories():
-    """Search memories in the local .knowledge.yaml."""
+    """Search memories recursively under the local directory."""
     try:
         q = request.args.get("q", "")
         npc = request.args.get("npc")
@@ -5648,67 +5700,68 @@ def search_memories():
         limit = int(request.args.get("limit", 50))
         if not q:
             return jsonify({"error": "Query parameter 'q' is required"}), 400
-        from npcpy.memory.knowledge_store import KnowledgeStore
-        store = KnowledgeStore(directory_path)
-        results = store.search_memories(q, limit=limit)
-        if npc or team or status:
-            filtered = []
-            for mem in results:
+        results = []
+        for store in _memory_stores(directory_path):
+            for mem in store.search_memories(q, limit=None):
+                mem['_directory'] = store.directory
                 if npc and mem.get('npc') != npc:
                     continue
                 if team and mem.get('team') != team:
                     continue
                 if status and mem.get('status') != status:
                     continue
-                filtered.append(mem)
-            results = filtered
+                results.append(mem)
+                if len(results) >= limit:
+                    break
+            if len(results) >= limit:
+                break
         return jsonify({"memories": results, "count": len(results)})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 @app.route("/api/memory/pending", methods=["GET"])
 def get_pending_memories():
-    """Get memories awaiting approval from the local .knowledge.yaml."""
+    """Get memories awaiting approval recursively under the directory."""
     try:
         limit = int(request.args.get("limit", 50))
         npc = request.args.get("npc")
         team = request.args.get("team")
         directory_path = request.args.get("directory_path", os.getcwd())
-        from npcpy.memory.knowledge_store import KnowledgeStore
-        store = KnowledgeStore(directory_path)
-        results = store.get_memories(status="pending_approval", limit=limit)
-        if npc or team:
-            filtered = []
-            for mem in results:
+        results = []
+        for store in _memory_stores(directory_path):
+            for mem in store.get_memories(status="pending_approval", limit=None):
+                mem['_directory'] = store.directory
                 if npc and mem.get('npc') != npc:
                     continue
                 if team and mem.get('team') != team:
                     continue
-                filtered.append(mem)
-            results = filtered
+                results.append(mem)
+                if len(results) >= limit:
+                    break
+            if len(results) >= limit:
+                break
         return jsonify({"memories": results, "count": len(results)})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 @app.route("/api/memory/scope", methods=["GET"])
 def get_memories_by_scope():
-    """Get memories for a specific scope from the local .knowledge.yaml."""
+    """Get memories for a specific scope recursively under the directory."""
     try:
         npc = request.args.get("npc", "")
         team = request.args.get("team", "")
         directory_path = request.args.get("directory_path", os.getcwd())
         status = request.args.get("status")
-        from npcpy.memory.knowledge_store import KnowledgeStore
-        store = KnowledgeStore(directory_path)
-        results = store.get_memories(status=status)
-        filtered = []
-        for mem in results:
-            if npc and mem.get('npc') != npc:
-                continue
-            if team and mem.get('team') != team:
-                continue
-            filtered.append(mem)
-        return jsonify({"memories": filtered, "count": len(filtered)})
+        results = []
+        for store in _memory_stores(directory_path):
+            for mem in store.get_memories(status=status):
+                mem['_directory'] = store.directory
+                if npc and mem.get('npc') != npc:
+                    continue
+                if team and mem.get('team') != team:
+                    continue
+                results.append(mem)
+        return jsonify({"memories": results, "count": len(results)})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
