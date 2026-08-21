@@ -734,11 +734,11 @@ def deserialize_model(path: str, format: str = "auto", trust_source: bool = Fals
     elif format == "joblib":
         if not trust_source:
             raise ValueError(
-                "Refusing to load a 'joblib' file without trust_source=True: "
-                "joblib.load executes arbitrary Python code embedded in the "
-                "file. Pass deserialize_model(path, trust_source=True) only "
-                "after confirming you trust the source, or re-save the model "
-                "with format='safetensors' if it doesn't need trust."
+                """Refusing to load a 'joblib' file without trust_source=True:
+                joblib.load executes arbitrary Python code embedded in the
+                file. Pass deserialize_model(path, trust_source=True) only
+                after confirming you trust the source, or re-save the model
+                with format='safetensors' if it doesn't need trust."""
             )
         import joblib
         return joblib.load(path)
