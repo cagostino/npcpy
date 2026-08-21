@@ -510,71 +510,11 @@ def load_project_env(current_path):
     else:
         print(f"No .env file found at {env_path}")
     return loaded_vars
-def _aggregate_yaml_store_dir(store_dir):
-    """Recursively aggregate all .knowledge.yaml stores under a directory."""
-    from npcpy.memory.knowledge_store import KnowledgeStore
-    stores = KnowledgeStore.find_all(store_dir)
-    memories = []
-    knowledge = []
-    concepts = []
-    links = []
-    for store in stores:
-        data = store.load()
-        memories.extend(data.get('memories', []))
-        knowledge.extend(data.get('knowledge', []))
-        concepts.extend(data.get('concepts', []))
-        links.extend(data.get('links', []))
-    return {'memories': memories, 'knowledge': knowledge, 'concepts': concepts, 'links': links}
 
 
-def _load_kg_from_yaml_stores(store_paths):
-    """Aggregate .knowledge.yaml stores from explicit paths into DataFrames."""
-    concepts = []
-    facts = []
-    links = []
-    for store_dir in store_paths:
-        agg = _aggregate_yaml_store_dir(store_dir)
-        for c in agg['concepts']:
-            concepts.append({
-                'name': c.get('name'),
-                'description': c.get('description', ''),
-                'generation': c.get('generation', 0),
-                'created_at': c.get('created_at'),
-            })
-        for m in agg['memories']:
-            stmt = m.get('final_memory') or m.get('initial_memory', '')
-            if stmt:
-                facts.append({
-                    'statement': stmt,
-                    'source_text': m.get('source_id', ''),
-                    'type': m.get('source_type', 'memory'),
-                    'generation': 0,
-                    'memory_id': m.get('id'),
-                    'npc_name': m.get('npc', ''),
-                    'team_name': m.get('team', ''),
-                })
-        for l in agg['links']:
-            links.append({
-                'source': l.get('from'),
-                'target': l.get('to'),
-                'link_type': l.get('type', 'memory_to_memory'),
-                'weight': 1,
-            })
-    concepts_df = pd.DataFrame(concepts) if concepts else pd.DataFrame(columns=['name', 'description', 'generation', 'created_at'])
-    facts_df = pd.DataFrame(facts) if facts else pd.DataFrame(columns=['statement', 'source_text', 'type', 'generation', 'memory_id', 'npc_name', 'team_name'])
-    links_df = pd.DataFrame(links) if links else pd.DataFrame(columns=['source', 'target', 'link_type', 'weight'])
-    return concepts_df, facts_df, links_df
-def _load_kg_from_yaml(workspace):
-    """DEPRECATED — kept for backward compat until callers migrate to storePaths."""
-    return _load_kg_from_yaml_stores([])
-def load_kg_data(store_paths=None):
-    """Load KG data from a specific list of .knowledge.yaml store directories.
-    store_paths is a list of directory paths. Falls back to registered stores if none provided."""
-    paths = store_paths or _get_registered_stores()
-    return _load_kg_from_yaml_stores(paths)
 def _get_registered_stores():
     """Read the configured KG registry YAML and return store directory paths."""
-    registry_path = app.config.get('KG_REGISTRY_PATH') or os.environ.get('INCOGNIDE_KG_REGISTRY')
+    registry_path = app.config.get('KG_REGISTRY_PATH')
     stores = []
     if registry_path:
         registry_path = os.path.expanduser(registry_path)
@@ -585,30 +525,49 @@ def _get_registered_stores():
                 stores = [str(s) for s in data.get('stores', []) if isinstance(s, str) and s]
             except Exception:
                 pass
-    index_stores = _get_index_locations()
-    seen = set()
-    merged = []
-    for s in index_stores + stores:
-        s = os.path.abspath(os.path.expanduser(s))
-        if s not in seen:
-            seen.add(s)
-            merged.append(s)
-    return merged
+    return stores
 
 
-def _get_index_locations():
-    """Read Incognide's active index locations."""
-    home = os.environ.get('INCOGNIDE_HOME', os.path.expanduser('~/.incognide'))
-    path = os.path.join(os.path.expanduser(home), 'index_locations.json')
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, 'r') as f:
-            data = json.load(f) or {}
-        locations = data.get('locations') or {}
-        return [str(p) for p, settings in locations.items() if isinstance(settings, dict) and settings.get('knowledge_enabled')]
-    except Exception:
-        return []
+def load_kg_data(store_paths=None):
+    """Aggregate .knowledge.yaml stores from explicit paths into DataFrames."""
+    from npcpy.memory.knowledge_store import KnowledgeStore
+    store_paths = store_paths or _get_registered_stores()
+    concepts = []
+    facts = []
+    links = []
+    for store_dir in store_paths:
+        for store in KnowledgeStore.find_all(store_dir):
+            data = store.load()
+            for c in data.get('concepts', []):
+                concepts.append({
+                    'name': c.get('name'),
+                    'description': c.get('description', ''),
+                    'generation': c.get('generation', 0),
+                    'created_at': c.get('created_at'),
+                })
+            for m in data.get('memories', []):
+                stmt = m.get('final_memory') or m.get('initial_memory', '')
+                if stmt:
+                    facts.append({
+                        'statement': stmt,
+                        'source_text': m.get('source_id', ''),
+                        'type': m.get('source_type', 'memory'),
+                        'generation': 0,
+                        'memory_id': m.get('id'),
+                        'npc_name': m.get('npc', ''),
+                        'team_name': m.get('team', ''),
+                    })
+            for l in data.get('links', []):
+                links.append({
+                    'source': l.get('from'),
+                    'target': l.get('to'),
+                    'link_type': l.get('type', 'memory_to_memory'),
+                    'weight': 1,
+                })
+    concepts_df = pd.DataFrame(concepts) if concepts else pd.DataFrame(columns=['name', 'description', 'generation', 'created_at'])
+    facts_df = pd.DataFrame(facts) if facts else pd.DataFrame(columns=['statement', 'source_text', 'type', 'generation', 'memory_id', 'npc_name', 'team_name'])
+    links_df = pd.DataFrame(links) if links else pd.DataFrame(columns=['source', 'target', 'link_type', 'weight'])
+    return concepts_df, facts_df, links_df
 app = Flask(__name__)
 app.config["REDIS_URL"] = "redis://localhost:6379"
 app.config['DB_PATH'] = ''
@@ -1697,16 +1656,18 @@ def knowledge_context():
 @app.route("/api/knowledge/all_memories", methods=["GET"])
 def knowledge_all_memories():
     """Return aggregated memories from all registered knowledge stores."""
+    from npcpy.memory.knowledge_store import KnowledgeStore
     try:
         limit = request.args.get("limit")
         limit = int(limit) if limit else None
         dirs = _get_registered_stores()
         all_memories = []
         for d in dirs:
-            agg = _aggregate_yaml_store_dir(d)
-            for mem in agg['memories']:
-                mem["_directory"] = mem.get('_directory') or d
-                all_memories.append(mem)
+            for store in KnowledgeStore.find_all(d):
+                data = store.load()
+                for mem in data.get('memories', []):
+                    mem["_directory"] = mem.get('_directory') or store.directory
+                    all_memories.append(mem)
         if limit:
             all_memories = all_memories[:limit]
         return jsonify({"memories": all_memories, "count": len(all_memories), "sources": len(dirs)})
@@ -1716,18 +1677,20 @@ def knowledge_all_memories():
 @app.route("/api/knowledge/all_search", methods=["GET"])
 def knowledge_all_search():
     """Search across all registered knowledge stores."""
+    from npcpy.memory.knowledge_store import KnowledgeStore
     try:
         q = request.args.get("q", "").lower()
         limit = int(request.args.get("limit", 20))
         dirs = _get_registered_stores()
         results = []
         for d in dirs:
-            agg = _aggregate_yaml_store_dir(d)
-            for mem in agg['memories']:
-                txt = (mem.get("initial_memory", "") + " " + mem.get("final_memory", "")).lower()
-                if q in txt:
-                    mem["_directory"] = mem.get('_directory') or d
-                    results.append(mem)
+            for store in KnowledgeStore.find_all(d):
+                data = store.load()
+                for mem in data.get('memories', []):
+                    txt = (mem.get("initial_memory", "") + " " + mem.get("final_memory", "")).lower()
+                    if q in txt:
+                        mem["_directory"] = mem.get('_directory') or store.directory
+                        results.append(mem)
             if len(results) >= limit:
                 break
         return jsonify({"memories": results[:limit], "count": len(results[:limit])})
@@ -6646,7 +6609,7 @@ def start_flask_server(
         app.config['DB_PATH'] = db_path
         app.config['user_npc_directory'] = user_npc_directory
         app.config['DATA_DIR'] = data_dir
-        app.config['KG_REGISTRY_PATH'] = kg_registry or os.environ.get('INCOGNIDE_KG_REGISTRY')
+        app.config['KG_REGISTRY_PATH'] = kg_registry
         app.config['IMAGE_MODEL'] = image_model
         app.config['IMAGE_PROVIDER'] = image_provider
         app.config['GGUF_DIR'] = gguf_dir
