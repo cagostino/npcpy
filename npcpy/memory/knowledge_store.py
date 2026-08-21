@@ -4,7 +4,7 @@ import uuid
 import yaml
 import threading
 from datetime import datetime, timezone
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Callable, Optional
 
 from npcpy.llm_funcs import get_facts
 
@@ -19,12 +19,36 @@ def _make_id() -> str:
     return uuid.uuid4().hex
 
 
+class _LogSink:
+    """Optional per-call log sink used to stream extraction progress."""
+    def __init__(self, callback: Optional[Callable[[str], None]] = None):
+        self.callback = callback
+
+    def log(self, message: str):
+        if self.callback:
+            try:
+                self.callback(message)
+            except Exception:
+                pass
+        print(message)
+
+
 class KnowledgeStore:
     def __init__(self, directory: str, filename: str = None):
         self.directory = os.path.abspath(directory)
         self.filename = filename or DEFAULT_KNOWLEDGE_FILE
         self.file_path = os.path.join(self.directory, self.filename)
         self._lock = threading.RLock()
+        self._log_sink: Optional[_LogSink] = None
+
+    def _set_log_sink(self, sink: Optional[_LogSink]):
+        self._log_sink = sink
+
+    def _log(self, message: str):
+        if self._log_sink:
+            self._log_sink.log(message)
+        else:
+            print(message)
 
     def load(self) -> Dict[str, Any]:
         if not os.path.exists(self.file_path):
@@ -167,6 +191,10 @@ class KnowledgeStore:
     def get_links(self) -> List[Dict[str, Any]]:
         return list(self.load().get("knowledge", []))
 
+    def get_all_links(self) -> List[Dict[str, Any]]:
+        data = self.load()
+        return list(data.get("links", [])) + list(data.get("knowledge", []))
+
     def get_yaml_links(self) -> List[Dict[str, Any]]:
         return list(self.load().get("links", []))
 
@@ -268,6 +296,7 @@ class KnowledgeStore:
         provider=None,
         npc=None,
         context='',
+        log_callback=None,
     ) -> Dict[str, Any]:
         """Walk this store's directory, extract text from files, create memories.
 
@@ -278,183 +307,190 @@ class KnowledgeStore:
 
         Facts are extracted via LLM on each file as it is processed.
 
-        Prints progress to stdout and returns stats about what was extracted.
+        Prints progress to stdout (or ``log_callback`` if provided) and returns
+        stats about what was extracted.
         """
-        if include_extensions is None:
-            include_extensions = {
-                ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h",
-                ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".scala",
-                ".sh", ".bash", ".zsh", ".ps1", ".bat",
-                ".txt", ".md", ".rst", ".log",
-                ".csv", ".json", ".xml", ".yaml", ".yml",
-                ".docx", ".pptx", ".xlsx", ".html", ".htm",
-            }
-        if exclude_dirs is None:
-            exclude_dirs = {
-                ".git", ".hg", ".svn", "node_modules", "__pycache__",
-                ".pytest_cache", ".mypy_cache", "dist", "build",
-                "venv", ".venv", "env", ".env", ".tox", ".egg-info",
-                ".gitignore", ".gitattributes",
-                ".local", ".cache", ".config", ".claude",
-                ".github", ".vscode", ".idea", "vendor",
-                "site-packages", "pip", "setuptools",
-                "target", "out", ".gradle", ".terraform",
-                "coverage", "htmlcov", ".nyc_output",
-                "tmp", "temp", "logs", "uploads", "media",
-                ".DS_Store", ".Trash", "__MACOSX",
-                "third_party", "third-party", "3rdparty",
-            }
-
-        new_memories = 0
-        files_scanned = 0
-        files_skipped = 0
-        files_noise = 0
-        files_changed = 0
-        stores_touched: set = set()
-
-        max_bytes = max_file_size_mb * 1024 * 1024
-        for root, dirs, files in os.walk(self.directory):
-            dirs[:] = [
-                d for d in dirs
-                if d not in exclude_dirs
-                and not d.startswith(".")
-                and "site-packages" not in d
-                and "__pycache__" not in d
-            ]
-
-            for fname in files:
-                if fname.startswith(".") or fname == self.filename:
-                    continue
-                ext = os.path.splitext(fname)[1].lower()
-                if ext not in include_extensions:
-                    continue
-
-                fpath = os.path.join(root, fname)
-                rel_path = os.path.relpath(fpath, self.directory)
-
-                if os.path.islink(fpath):
-                    continue
-
-                try:
-                    fsize = os.path.getsize(fpath)
-                except OSError:
-                    continue
-                if fsize > max_bytes:
-                    continue
-
-                try:
-                    stat = os.stat(fpath)
-                except OSError:
-                    continue
-
-                size = stat.st_size
-                mtime = stat.st_mtime
-                fhash = self._file_hash(fpath)
-
-                sub_store = KnowledgeStore(root)
-                sub_data = sub_store.load()
-                sub_tracker = sub_data.setdefault("scanned_files", {})
-
-                store_rel_path = os.path.relpath(fpath, root)
-
-                prev = sub_tracker.get(store_rel_path, {})
-                if prev.get("hash") == fhash:
-                    files_skipped += 1
-                    print(f"  SKIP  {rel_path}")
-                    continue
-
-                files_changed += 1
-                print(f"  SCAN  {rel_path}")
-                text = self._extract_text(fpath)
-                if not text or not text.strip():
-                    sub_tracker[store_rel_path] = {
-                        "hash": fhash,
-                        "size": size,
-                        "mtime": mtime,
-                        "decision": "empty",
-                        "scanned_at": _utcnow(),
-                    }
-                    sub_data["last_extracted_at"] = _utcnow()
-                    sub_store.save(sub_data)
-                    stores_touched.add(root)
-                    print(f"  EMPTY {rel_path}")
-                    continue
-
-                if self._is_noise_file(fpath, text):
-                    files_noise += 1
-                    sub_tracker[store_rel_path] = {
-                        "hash": fhash,
-                        "size": size,
-                        "mtime": mtime,
-                        "decision": "noise",
-                        "scanned_at": _utcnow(),
-                    }
-                    sub_data["last_extracted_at"] = _utcnow()
-                    sub_store.save(sub_data)
-                    stores_touched.add(root)
-                    print(f"  NOISE {rel_path}")
-                    continue
-
-                files_scanned += 1
-                print(f"  EXTRACT {rel_path}  ({size} bytes, {len(text)} chars)")
-
-                extracted_facts = []
-                CHUNK = 100000
-                if len(text) > CHUNK:
-                    chunks = len(text) // CHUNK
-                    print(f"    SLICING into {chunks} chunks (size {CHUNK})")
-                    for n in range(chunks):
-                        segment = text[n * CHUNK:(n + 1) * CHUNK]
-                        print(f"    CHUNK {n + 1}/{chunks}  ({len(segment)} chars)")
-                        chunk_facts = get_facts(segment, model=model, provider=provider, npc=npc, context=context)
-                        if not chunk_facts:
-                            print("    NO FACTS")
-                        for fact in chunk_facts:
-                            print(f"    FACT  {fact}")
-                        extracted_facts.extend(chunk_facts)
-                else:
-                    extracted_facts = get_facts(text, model=model, provider=provider, npc=npc, context=context)
-                    if not extracted_facts:
-                        print("    NO FACTS")
-
-                for fact in extracted_facts:
-                    stmt = fact.get("statement", "").strip()
-                    if not stmt:
-                        continue
-                    print(f"    MEM   {stmt[:200]}")
-                    mem_id = _make_id()
-                    mem = {
-                        "id": mem_id,
-                        "message_id": "",
-                        "conversation_id": "",
-                        "npc": "",
-                        "team": "",
-                        "directory_path": root,
-                        "timestamp": _utcnow(),
-                        "initial_memory": stmt,
-                        "final_memory": stmt,
-                        "status": "auto-extracted",
-                        "model": "",
-                        "provider": "",
-                        "created_at": _utcnow(),
-                        "source_type": "file",
-                        "source_id": store_rel_path,
-                        "source_hash": fhash,
-                    }
-                    sub_data["memories"].append(mem)
-                    new_memories += 1
-
-                sub_tracker[store_rel_path] = {
-                    "hash": fhash,
-                    "size": size,
-                    "mtime": mtime,
-                    "decision": "extracted",
-                    "scanned_at": _utcnow(),
-                    "facts": len(extracted_facts),
+        old_sink = self._log_sink
+        self._log_sink = _LogSink(log_callback)
+        try:
+            if include_extensions is None:
+                include_extensions = {
+                    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h",
+                    ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".scala",
+                    ".sh", ".bash", ".zsh", ".ps1", ".bat",
+                    ".txt", ".md", ".rst", ".log",
+                    ".csv", ".json", ".xml", ".yaml", ".yml",
+                    ".docx", ".pptx", ".xlsx", ".html", ".htm",
                 }
-                sub_data["last_extracted_at"] = _utcnow()
-                sub_store.save(sub_data)
-                stores_touched.add(root)
+            if exclude_dirs is None:
+                exclude_dirs = {
+                    ".git", ".hg", ".svn", "node_modules", "__pycache__",
+                    ".pytest_cache", ".mypy_cache", "dist", "build",
+                    "venv", ".venv", "env", ".env", ".tox", ".egg-info",
+                    ".gitignore", ".gitattributes",
+                    ".local", ".cache", ".config", ".claude",
+                    ".github", ".vscode", ".idea", "vendor",
+                    "site-packages", "pip", "setuptools",
+                    "target", "out", ".gradle", ".terraform",
+                    "coverage", "htmlcov", ".nyc_output",
+                    "tmp", "temp", "logs", "uploads", "media",
+                    ".DS_Store", ".Trash", "__MACOSX",
+                    "third_party", "third-party", "3rdparty",
+                }
+
+            new_memories = 0
+            files_scanned = 0
+            files_skipped = 0
+            files_noise = 0
+            files_changed = 0
+            stores_touched: set = set()
+
+            max_bytes = max_file_size_mb * 1024 * 1024
+            for root, dirs, files in os.walk(self.directory):
+                dirs[:] = [
+                    d for d in dirs
+                    if d not in exclude_dirs
+                    and not d.startswith(".")
+                    and "site-packages" not in d
+                    and "__pycache__" not in d
+                ]
+
+                for fname in files:
+                    if fname.startswith(".") or fname == self.filename:
+                        continue
+                    ext = os.path.splitext(fname)[1].lower()
+                    if ext not in include_extensions:
+                        continue
+
+                    fpath = os.path.join(root, fname)
+                    rel_path = os.path.relpath(fpath, self.directory)
+
+                    if os.path.islink(fpath):
+                        continue
+
+                    try:
+                        fsize = os.path.getsize(fpath)
+                    except OSError:
+                        continue
+                    if fsize > max_bytes:
+                        continue
+
+                    try:
+                        stat = os.stat(fpath)
+                    except OSError:
+                        continue
+
+                    size = stat.st_size
+                    mtime = stat.st_mtime
+                    fhash = self._file_hash(fpath)
+
+                    sub_store = KnowledgeStore(root)
+                    sub_data = sub_store.load()
+                    sub_tracker = sub_data.setdefault("scanned_files", {})
+
+                    store_rel_path = os.path.relpath(fpath, root)
+
+                    prev = sub_tracker.get(store_rel_path, {})
+                    if prev.get("hash") == fhash:
+                        files_skipped += 1
+                        self._log(f"  SKIP  {rel_path}")
+                        continue
+
+                    files_changed += 1
+                    self._log(f"  SCAN  {rel_path}")
+                    text = self._extract_text(fpath)
+                    if not text or not text.strip():
+                        sub_tracker[store_rel_path] = {
+                            "hash": fhash,
+                            "size": size,
+                            "mtime": mtime,
+                            "decision": "empty",
+                            "scanned_at": _utcnow(),
+                        }
+                        sub_data["last_extracted_at"] = _utcnow()
+                        sub_store.save(sub_data)
+                        stores_touched.add(root)
+                        self._log(f"  EMPTY {rel_path}")
+                        continue
+
+                    if self._is_noise_file(fpath, text):
+                        files_noise += 1
+                        sub_tracker[store_rel_path] = {
+                            "hash": fhash,
+                            "size": size,
+                            "mtime": mtime,
+                            "decision": "noise",
+                            "scanned_at": _utcnow(),
+                        }
+                        sub_data["last_extracted_at"] = _utcnow()
+                        sub_store.save(sub_data)
+                        stores_touched.add(root)
+                        self._log(f"  NOISE {rel_path}")
+                        continue
+
+                    files_scanned += 1
+                    self._log(f"  EXTRACT {rel_path}  ({size} bytes, {len(text)} chars)")
+
+                    extracted_facts = []
+                    CHUNK = 100000
+                    if len(text) > CHUNK:
+                        chunks = len(text) // CHUNK
+                        self._log(f"    SLICING into {chunks} chunks (size {CHUNK})")
+                        for n in range(chunks):
+                            segment = text[n * CHUNK:(n + 1) * CHUNK]
+                            self._log(f"    CHUNK {n + 1}/{chunks}  ({len(segment)} chars)")
+                            chunk_facts = get_facts(segment, model=model, provider=provider, npc=npc, context=context)
+                            if not chunk_facts:
+                                self._log("    NO FACTS")
+                            for fact in chunk_facts:
+                                self._log(f"    FACT  {fact}")
+                            extracted_facts.extend(chunk_facts)
+                    else:
+                        extracted_facts = get_facts(text, model=model, provider=provider, npc=npc, context=context)
+                        if not extracted_facts:
+                            self._log("    NO FACTS")
+
+                    for fact in extracted_facts:
+                        stmt = fact.get("statement", "").strip()
+                        if not stmt:
+                            continue
+                        self._log(f"    MEM   {stmt[:200]}")
+                        mem_id = _make_id()
+                        mem = {
+                            "id": mem_id,
+                            "message_id": "",
+                            "conversation_id": "",
+                            "npc": "",
+                            "team": "",
+                            "directory_path": root,
+                            "timestamp": _utcnow(),
+                            "initial_memory": stmt,
+                            "final_memory": stmt,
+                            "status": "auto-extracted",
+                            "model": "",
+                            "provider": "",
+                            "created_at": _utcnow(),
+                            "source_type": "file",
+                            "source_id": store_rel_path,
+                            "source_hash": fhash,
+                        }
+                        sub_data["memories"].append(mem)
+                        new_memories += 1
+
+                    sub_tracker[store_rel_path] = {
+                        "hash": fhash,
+                        "size": size,
+                        "mtime": mtime,
+                        "decision": "extracted",
+                        "scanned_at": _utcnow(),
+                        "facts": len(extracted_facts),
+                    }
+                    sub_data["last_extracted_at"] = _utcnow()
+                    sub_store.save(sub_data)
+                    stores_touched.add(root)
+
+        finally:
+            self._log_sink = old_sink
 
         return {
             "files_changed": files_changed,
@@ -517,7 +553,7 @@ class KnowledgeStore:
 
     def evolve(self, model=None, provider=None, npc=None, context='',
                include_memories=True, include_knowledge=True, full_rebuild=False,
-               all_facts=None, all_concepts=None) -> Dict[str, Any]:
+               all_facts=None, all_concepts=None, log_callback=None) -> Dict[str, Any]:
         """Run concept extraction and linking on this store.
 
         If ``all_facts`` and ``all_concepts`` are supplied they are treated as the
@@ -530,7 +566,9 @@ class KnowledgeStore:
         """
         from npcpy.memory.knowledge_graph import kg_evolve_incremental
 
-        extraction_stats = self.extract_from_directory(model=model, provider=provider, npc=npc, context=context)
+        extraction_stats = self.extract_from_directory(
+            model=model, provider=provider, npc=npc, context=context, log_callback=log_callback
+        )
 
         data = self.load()
         memories = data.get("memories", [])
@@ -573,7 +611,7 @@ class KnowledgeStore:
         new_kg = existing_kg
         for i in range(0, len(facts), batch_size):
             batch = facts[i:i + batch_size]
-            print(f"  Evolving batch {i // batch_size + 1}/{(len(facts) - 1) // batch_size + 1} ({len(batch)} facts)...")
+            self._log(f"  Evolving batch {i // batch_size + 1}/{(len(facts) - 1) // batch_size + 1} ({len(batch)} facts)...")
             new_kg, _ = kg_evolve_incremental(
                 existing_kg=new_kg,
                 new_facts=batch,
@@ -720,9 +758,11 @@ class KnowledgeStore:
         stats = self._persist_kg_back(new_kg, stmt_to_mids, full_replace=True)
         return {"status": "success", "step": "create", **stats}
 
-    def assimilate(self, model=None, provider=None, npc=None, context=""):
+    def assimilate(self, model=None, provider=None, npc=None, context="", log_callback=None):
         """Alias for evolve: extract new files and merge into existing KG."""
-        return self.evolve(model=model, provider=provider, npc=npc, context=context)
+        return self.evolve(
+            model=model, provider=provider, npc=npc, context=context, log_callback=log_callback
+        )
 
     def sleep(self, model=None, provider=None, npc=None, context="", operations=None):
         """Refine, prune, and deepen the existing KG."""
