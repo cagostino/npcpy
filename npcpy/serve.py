@@ -2081,6 +2081,8 @@ def save_jinx():
         jinx_name = jinx_data.get("jinx_name")
         if not jinx_name:
             return jsonify({"error": "Jinx name is required"}), 400
+        if os.path.basename(jinx_name) != jinx_name:
+            return jsonify({"error": "Invalid jinx name"}), 400
         if is_global:
             user_npc_dir = app.config.get('user_npc_directory')
             if not user_npc_dir:
@@ -3179,11 +3181,39 @@ def save_npc():
         data = request.json
         npc_data = data.get("npc")
         source_path = data.get("sourcePath")
+        is_global = data.get("isGlobal")
+        current_path = data.get("currentPath")
         if not npc_data or "name" not in npc_data:
             return jsonify({"error": "Invalid NPC data"}), 400
-        npc_directory = os.path.dirname(source_path) if source_path else None
-        if not npc_directory:
-            return jsonify({"error": "sourcePath required"}), 400
+        npc_name = npc_data["name"]
+        if os.path.basename(npc_name) != npc_name:
+            return jsonify({"error": "Invalid NPC name"}), 400
+        if source_path:
+            npc_directory = os.path.abspath(os.path.realpath(os.path.dirname(source_path)))
+            allowed_roots = [
+                os.path.abspath(os.path.realpath(app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team')))
+            ]
+            if current_path and ".." not in current_path:
+                base = current_path
+                if not base.endswith("npc_team"):
+                    base = os.path.join(base, "npc_team")
+                allowed_roots.append(os.path.abspath(os.path.realpath(base)))
+            if not any(npc_directory == root or npc_directory.startswith(root + os.sep) for root in allowed_roots):
+                return jsonify({"error": "Invalid sourcePath"}), 400
+        else:
+            if is_global:
+                user_npc_dir = app.config.get('user_npc_directory')
+                if not user_npc_dir:
+                    return jsonify({"error": "user_npc_directory not configured"}), 500
+                npc_directory = user_npc_dir
+            else:
+                if not current_path:
+                    return jsonify({"error": "currentPath or sourcePath is required"}), 400
+                if ".." in current_path:
+                    return jsonify({"error": "Invalid currentPath"}), 400
+                npc_directory = current_path
+                if not npc_directory.endswith("npc_team"):
+                    npc_directory = os.path.join(npc_directory, "npc_team")
         existing_npc_path = os.path.join(npc_directory, f"{npc_data['name']}.npc")
         existing_model = npc_data.get("model", "")
         existing_provider = npc_data.get("provider", "")

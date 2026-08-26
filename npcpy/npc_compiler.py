@@ -844,6 +844,8 @@ class Jinx:
         return result
 
     def save(self, directory):
+        if os.path.basename(self.jinx_name) != self.jinx_name:
+            raise ValueError(f"Invalid jinx name: {self.jinx_name}")
         jinx_path = os.path.join(directory, f"{self.jinx_name}.jinx")
         os.makedirs(os.path.dirname(jinx_path), exist_ok=True)
         return write_yaml_file(jinx_path, self.to_dict())
@@ -2465,6 +2467,8 @@ Requirements:
         """Save NPC to file, preserving original {{ Jinx('...') }} syntax."""
         if directory is None:
             directory = self.npc_directory
+        if os.path.basename(self.name) != self.name:
+            raise ValueError(f"Invalid NPC name: {self.name}")
         os.makedirs(directory, exist_ok=True)
         npc_path = os.path.join(directory, f"{self.name}.npc")
 
