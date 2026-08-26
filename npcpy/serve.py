@@ -1839,6 +1839,7 @@ def execute_jinx():
     npc_name = data.get("npc")
     npc_source = data.get("npcSource", "global")
     current_path = data.get("currentPath")
+    is_html = data.get("isHtml", False)
     if not jinx_name:
         print("ERROR: jinxName is required", file=sys.stderr)
         return jsonify({"error": "jinxName is required"}), 400
@@ -1914,6 +1915,7 @@ def execute_jinx():
         **jinx_local_context,
         'state': state,
     }
+    messages = []
     jinx_execution_result = jinx.execute(
         input_values=input_values,
         jinja_env=npc_object.jinja_env if npc_object else None,
@@ -2059,6 +2061,16 @@ def api_command(command):
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)})
+
+def _resolve_contained_path(base_dir: str, rel_path: str) -> str:
+    """Resolve a path relative to base_dir and ensure it stays within base_dir."""
+    base_dir = os.path.abspath(os.path.realpath(base_dir))
+    target = os.path.abspath(os.path.realpath(os.path.join(base_dir, rel_path)))
+    if not (target == base_dir or target.startswith(base_dir + os.sep)):
+        raise ValueError(f"Path traversal detected: {rel_path}")
+    return target
+
+
 @app.route("/api/jinxes/save", methods=["POST"])
 def save_jinx():
     try:
@@ -2075,13 +2087,21 @@ def save_jinx():
                 return jsonify({"error": "user_npc_directory not configured"}), 500
             jinxes_dir = os.path.join(user_npc_dir, "jinxes")
         else:
+            if not current_path:
+                return jsonify({"error": "currentPath is required"}), 400
+            if ".." in current_path:
+                return jsonify({"error": "Invalid currentPath"}), 400
             if not current_path.endswith("npc_team"):
                 current_path = os.path.join(current_path, "npc_team")
             jinxes_dir = os.path.join(current_path, "jinxes")
+        os.makedirs(jinxes_dir, exist_ok=True)
+        jinxes_dir = os.path.abspath(os.path.realpath(jinxes_dir))
         jinx = Jinx(jinx_data=jinx_data)
         jinx_rel_path = jinx_data.get("path", "")
-        if jinx_rel_path and "/" in jinx_rel_path:
-            save_dir = os.path.join(jinxes_dir, os.path.dirname(jinx_rel_path))
+        if jinx_rel_path:
+            if ".." in jinx_rel_path or jinx_rel_path.startswith("/"):
+                return jsonify({"error": "Invalid jinx path"}), 400
+            save_dir = _resolve_contained_path(jinxes_dir, os.path.dirname(jinx_rel_path))
         else:
             save_dir = jinxes_dir
         jinx.save(save_dir)
@@ -2096,25 +2116,31 @@ def delete_jinx():
         jinx_path = data.get("jinxPath", "")
         scope = data.get("scope", "global")
         current_path = data.get("currentPath", "")
-        source_path = data.get("sourcePath", "")
-        if source_path and os.path.exists(source_path):
-            file_path = source_path
-        elif jinx_path:
-            if scope == "global":
-                jinxes_dir = os.path.join(app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team'), 'jinxes')
-            else:
-                base = current_path
-                if not base.endswith("npc_team"):
-                    base = os.path.join(base, "npc_team")
-                jinxes_dir = os.path.join(base, "jinxes")
-            file_path = os.path.join(jinxes_dir, f"{jinx_path}.jinx")
+        if not jinx_path:
+            return jsonify({"error": "jinxPath is required"}), 400
+        if ".." in jinx_path or jinx_path.startswith("/"):
+            return jsonify({"error": "Invalid jinxPath"}), 400
+        if scope == "global":
+            user_npc_dir = app.config.get('user_npc_directory')
+            jinxes_dir = os.path.join(user_npc_dir or os.path.expanduser('~/npc_team'), 'jinxes')
         else:
-            return jsonify({"error": "jinxPath or sourcePath required"}), 400
+            if not current_path:
+                return jsonify({"error": "currentPath is required for project scope"}), 400
+            if ".." in current_path:
+                return jsonify({"error": "Invalid currentPath"}), 400
+            base = current_path
+            if not base.endswith("npc_team"):
+                base = os.path.join(base, "npc_team")
+            jinxes_dir = os.path.join(base, "jinxes")
+        jinxes_dir = os.path.abspath(os.path.realpath(jinxes_dir))
+        file_path = os.path.abspath(os.path.realpath(os.path.join(jinxes_dir, f"{jinx_path}.jinx")))
+        if not (file_path == jinxes_dir or file_path.startswith(jinxes_dir + os.sep)):
+            return jsonify({"error": "Invalid jinxPath"}), 400
         if not os.path.exists(file_path):
             return jsonify({"error": f"File not found: {file_path}"}), 404
         os.unlink(file_path)
         parent = os.path.dirname(file_path)
-        while parent and parent != jinxes_dir if not source_path else False:
+        while parent and parent != jinxes_dir:
             try:
                 if not os.listdir(parent):
                     os.rmdir(parent)
@@ -2153,11 +2179,16 @@ def ingest_jinx_from_url():
         if scope == "global":
             jinxes_dir = os.path.join(app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team'), 'jinxes')
         else:
-            base = current_path if current_path else (app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team'))
+            if not current_path:
+                current_path = app.config.get('user_npc_directory') or os.path.expanduser('~/npc_team')
+            if ".." in current_path:
+                return jsonify({"error": "Invalid currentPath"}), 400
+            base = current_path
             if not base.endswith("npc_team"):
                 base = os.path.join(base, "npc_team")
             jinxes_dir = os.path.join(base, "jinxes")
         os.makedirs(jinxes_dir, exist_ok=True)
+        jinxes_dir = os.path.abspath(os.path.realpath(jinxes_dir))
         url_lower = url.lower()
         if skill_type == "auto":
             if url_lower.endswith(".jinx") or url_lower.endswith(".yaml") or url_lower.endswith(".yml"):
@@ -2178,7 +2209,11 @@ def ingest_jinx_from_url():
                     raw_name = raw_name[: -len(ext)]
             name = raw_name.replace(" ", "_").replace("-", "_").lower()
         if skill_type == "jinx":
-            file_path = os.path.join(jinxes_dir, f"{name}.jinx")
+            if ".." in name or name.startswith("/"):
+                return jsonify({"error": "Invalid name"}), 400
+            file_path = os.path.abspath(os.path.realpath(os.path.join(jinxes_dir, f"{name}.jinx")))
+            if not (file_path == jinxes_dir or file_path.startswith(jinxes_dir + os.sep)):
+                return jsonify({"error": "Invalid name"}), 400
             with open(file_path, "w") as f:
                 f.write(content)
             return jsonify({
@@ -2189,7 +2224,11 @@ def ingest_jinx_from_url():
                 "message": f"Jinx '{name}' saved to {file_path}"
             })
         else:
-            skill_dir = os.path.join(jinxes_dir, "skills", name)
+            if ".." in name or name.startswith("/"):
+                return jsonify({"error": "Invalid name"}), 400
+            skill_dir = os.path.abspath(os.path.realpath(os.path.join(jinxes_dir, "skills", name)))
+            if not (skill_dir == jinxes_dir or skill_dir.startswith(jinxes_dir + os.sep)):
+                return jsonify({"error": "Invalid name"}), 400
             os.makedirs(skill_dir, exist_ok=True)
             skill_path = os.path.join(skill_dir, "SKILL.md")
             if content.strip().startswith("---"):
@@ -3178,8 +3217,11 @@ def get_jinxes_project():
     project_dir = request.args.get("currentPath")
     if not project_dir:
         return jsonify({"jinxes": [], "error": "currentPath required"}), 400
+    if ".." in project_dir:
+        return jsonify({"jinxes": [], "error": "Invalid currentPath"}), 400
     if not project_dir.endswith("jinxes"):
         project_dir = os.path.join(project_dir, "jinxes")
+    project_dir = os.path.abspath(os.path.realpath(project_dir))
     if not os.path.exists(project_dir):
         return jsonify({"jinxes": [], "error": None})
     return jsonify({"jinxes": _serialize_jinxes_from_dir(project_dir), "error": None})
@@ -3504,6 +3546,8 @@ def get_ctx_path(is_global, current_path=None, create_default=False):
     else:
         if not current_path:
             return None
+        if ".." in current_path:
+            raise ValueError("Invalid current_path: path traversal detected")
         ctx_dir = os.path.join(current_path, "npc_team")
         ctx_files = glob.glob(os.path.join(ctx_dir, "*.ctx"))
         if ctx_files:
@@ -6581,7 +6625,7 @@ def track_activity():
         return jsonify({'success': False, 'error': str(e)}), 500
 def start_flask_server(
     port=5337,
-    host="0.0.0.0",
+    host="127.0.0.1",
     cors_origins=None,
     static_files=None,
     debug=False,
@@ -6635,7 +6679,7 @@ def start_flask_server(
         raise
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generic npcpy API server")
-    parser.add_argument("--host", default="0.0.0.0", help="Host to bind the server on")
+    parser.add_argument("--host", default="127.0.0.1", help="Host to bind the server on")
     parser.add_argument("--port", type=int, default=5337, help="Port to bind the server on")
     parser.add_argument("--db-path", default=None, help="Path to the SQLite history database")
     parser.add_argument("--dir", default=".", help="Path to the NPC directory (default: current working directory)")
