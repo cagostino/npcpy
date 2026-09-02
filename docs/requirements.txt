@@ -27,7 +27,7 @@ opencv-python
 openai
 openai-whisper
 pandas
-Pillow==12.1.1
+Pillow>=12.3.0
 playsound==1.2.2
 psycopg2-binary
 pyaudio

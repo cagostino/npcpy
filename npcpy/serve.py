@@ -9,6 +9,7 @@ try:
 except ImportError:
     redis = None
 import threading
+import queue
 import uuid
 import sys
 import traceback
@@ -100,12 +101,13 @@ from pathlib import Path
 from flask_cors import CORS
 cancellation_flags = {}
 cancellation_lock = threading.Lock()
-# Pending permission requests from /api/stream to the Rust/frontend shell.
 permission_requests = {}
 permission_lock = threading.Lock()
+stream_cancel_events = {}
+stream_cancel_callbacks = {}
+stream_chunk_queues = {}
 class ServeState:
-    """Minimal server-side execution context for jinxes and tools.
-    Minimal server-side execution context for jinxes and tools."""
+    """Minimal server-side execution context for jinxes and tools."""
     def __init__(
         self,
         npc=None,
@@ -131,13 +133,19 @@ def _setup_stream(data):
     stream_id = data.get("streamId") or str(uuid.uuid4())
     with cancellation_lock:
         cancellation_flags[stream_id] = False
+        stream_cancel_events[stream_id] = threading.Event()
     return stream_id
 def _cleanup_stream(stream_id, mcp_state_key=None):
     with cancellation_lock:
         cancellation_flags.pop(stream_id, None)
-    if mcp_state_key and hasattr(app, 'mcp_clients') and mcp_state_key in app.mcp_clients:
-        print(f"[CLEANUP] Removing MCP state for {mcp_state_key}")
-        del app.mcp_clients[mcp_state_key]
+        stream_cancel_events.pop(stream_id, None)
+        stream_cancel_callbacks.pop(stream_id, None)
+        q = stream_chunk_queues.pop(stream_id, None)
+    if q is not None:
+        try:
+            q.put({"type": "__cancel__"}, block=False)
+        except queue.Full:
+            pass
 def _serialize_jinxes_from_dir(directory):
     jinx_data = []
     for jinx in load_jinxes_from_directory(directory):
@@ -3883,8 +3891,6 @@ def get_attachment_response():
         "conversationId": conversation_id,
         "messages": messages,
     })
-# Minimal fallback for providers litellm doesn't cover with image model lists.
-# These are suggestions, not gates — users can always pass a custom model ID.
 _IMAGE_MODELS_FALLBACK = {
     "ollama": [
         {"value": "x/z-image-turbo", "display_name": "Z-Image Turbo (6B)"},
@@ -3908,8 +3914,6 @@ _IMAGE_MODELS_FALLBACK = {
     ],
 }
 
-# Map provider key -> (litellm_attr_name, filter_func)
-# If attr_name is None, the provider has no litellm image coverage and falls back to hardcoded.
 _LITELLM_IMAGE_PROVIDER_ATTRS = {
     "gemini": ("gemini_models", lambda m: any(k in m.lower() for k in ["image", "imagen", "nano", "banana"]) and "veo" not in m.lower()),
     "openai": ("openai_image_generation_models", None),
@@ -4031,8 +4035,6 @@ def get_available_image_models(current_path=None):
     if current_path:
         load_project_env(current_path)
     all_image_models = []
-
-    # 1) Configured custom model
     cfg_image_model = app.config.get('IMAGE_MODEL')
     cfg_image_provider = app.config.get('IMAGE_PROVIDER')
     if cfg_image_model and cfg_image_provider:
@@ -4041,18 +4043,13 @@ def get_available_image_models(current_path=None):
             "provider": cfg_image_provider,
             "display_name": f"{cfg_image_model} | {cfg_image_provider} (Configured)",
         })
-
-    # 2) litellm-driven providers + fallbacks + custom passthrough
     try:
         import litellm
     except Exception:
         litellm = None
-
     for provider_key, api_key_env in IMAGE_PROVIDER_API_KEYS.items():
         if not os.environ.get(api_key_env):
             continue
-
-        # litellm lookup
         attr_name, filter_fn = _LITELLM_IMAGE_PROVIDER_ATTRS.get(provider_key, (None, None))
         if litellm and attr_name:
             try:
@@ -4060,7 +4057,6 @@ def get_available_image_models(current_path=None):
                 for model_id in sorted(model_set):
                     if filter_fn and not filter_fn(model_id):
                         continue
-                    # Strip provider prefix (e.g. gemini/gemini-3-pro-image -> gemini-3-pro-image)
                     clean_id = model_id.split("/")[-1] if "/" in model_id else model_id
                     all_image_models.append({
                         "value": clean_id,
@@ -4069,8 +4065,6 @@ def get_available_image_models(current_path=None):
                     })
             except Exception as e:
                 print(f"Warning: litellm lookup failed for {provider_key}: {e}")
-
-        # Minimal hardcoded fallback for providers litellm doesn't cover
         fallback = _IMAGE_MODELS_FALLBACK.get(provider_key, [])
         for model in fallback:
             all_image_models.append({
@@ -4078,21 +4072,15 @@ def get_available_image_models(current_path=None):
                 "provider": provider_key,
                 "display_name": f"{model['display_name']} | {provider_key}",
             })
-
-        # Always expose a custom passthrough so users aren't gated by discovery
         all_image_models.append({
             "value": "__custom__",
             "provider": provider_key,
             "display_name": f"Custom {provider_key} model",
         })
-
-    # 3) Local diffusers from HF cache (cached in ~/.npcsh)
     try:
         all_image_models.extend(_get_cached_local_diffusers_models())
     except Exception as e:
         print(f"Warning: local diffusers cache lookup failed: {e}")
-
-    # 4) Fine-tuned project models
     try:
         finetuned_data_result = _get_finetuned_models_internal(current_path)
         if finetuned_data_result and finetuned_data_result.get("models"):
@@ -4101,8 +4089,6 @@ def get_available_image_models(current_path=None):
             print(f"Internal error in _get_finetuned_models_internal: {finetuned_data_result['error']}")
     except Exception as e:
         print(f"Error calling _get_finetuned_models_internal: {e}")
-
-    # 5) Deduplicate
     seen_models = set()
     unique_models = []
     for model_entry in all_image_models:
@@ -5078,13 +5064,6 @@ def stream():
             allowed = set(selected_mcp_tools_from_request)
             tool_executors = {k: v for k, v in tool_executors.items() if k in allowed}
         print(f"[MCP] resolved {len(tools_for_llm)} tools: {[t['function']['name'] for t in tools_for_llm]}")
-        if not hasattr(app, 'mcp_clients'):
-            app.mcp_clients = {}
-        state_key = f"{conversation_id}_{npc_name or 'default'}"
-        app._last_mcp_state_key = state_key
-        if state_key not in app.mcp_clients:
-            app.mcp_clients[state_key] = {"client": None, "server_path": None, "messages": messages}
-        app.mcp_clients[state_key].setdefault("messages", messages)
         request_messages = clean_messages_for_llm(messages)
         if not request_messages:
             request_messages = []
@@ -5092,6 +5071,79 @@ def stream():
             system_prompt = npc_object.get_system_prompt(tool_capable=True) if npc_object else "You are a helpful assistant with access to tools."
             request_messages.insert(0, {'role': 'system', 'content': system_prompt})
         messages = request_messages
+        def _run_with_cancellation(callable, stream_id, timeout=None):
+            result = {"value": None, "error": None, "cancelled": False}
+            done_event = threading.Event()
+            with cancellation_lock:
+                cancel_event = stream_cancel_events.get(stream_id)
+            def target():
+                try:
+                    result["value"] = callable()
+                except Exception as e:
+                    result["error"] = e
+                finally:
+                    done_event.set()
+            t = threading.Thread(target=target, daemon=True)
+            t.start()
+            if timeout is None:
+                deadline = None
+            else:
+                deadline = time.time() + timeout
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    result["cancelled"] = True
+                    return result
+                if not t.is_alive():
+                    return result
+                if deadline is not None and time.time() >= deadline:
+                    result["cancelled"] = True
+                    return result
+                if cancel_event is not None:
+                    cancel_event.wait(timeout=0.2)
+                else:
+                    t.join(timeout=0.2)
+        def _stream_llm_cancellable(llm_callable, stream_id):
+            chunk_queue = queue.Queue()
+            with cancellation_lock:
+                stream_chunk_queues[stream_id] = chunk_queue
+                cancel_event = stream_cancel_events.get(stream_id)
+            result = {"error": None}
+            def target():
+                try:
+                    llm_response = llm_callable()
+                    response_gen = llm_response.get("response", []) if isinstance(llm_response, dict) else []
+                    usage = llm_response.get("usage", {}) if isinstance(llm_response, dict) else {}
+                    chunk_queue.put({"type": "__usage__", "usage": usage})
+                    if response_gen:
+                        for chunk in response_gen:
+                            chunk_queue.put({"type": "__chunk__", "chunk": chunk})
+                            if cancel_event is not None and cancel_event.is_set():
+                                break
+                except Exception as e:
+                    result["error"] = e
+                finally:
+                    chunk_queue.put({"type": "__done__"})
+            t = threading.Thread(target=target, daemon=True)
+            t.start()
+            while True:
+                with cancellation_lock:
+                    still_active = stream_id in stream_cancel_events
+                    cancel_event = stream_cancel_events.get(stream_id)
+                if not still_active or (cancel_event is not None and cancel_event.is_set()):
+                    yield {"kind": "cancel"}
+                    return
+                item = chunk_queue.get()
+                if item["type"] == "__cancel__":
+                    yield {"kind": "cancel"}
+                    return
+                if item["type"] == "__done__":
+                    if result["error"]:
+                        raise result["error"]
+                    return
+                if item["type"] == "__usage__":
+                    yield {"kind": "usage", "usage": item["usage"]}
+                elif item["type"] == "__chunk__":
+                    yield {"kind": "chunk", "chunk": item["chunk"]}
         def stream_mcp_sse():
             nonlocal messages
             iteration = 0
@@ -5113,6 +5165,11 @@ def stream():
             print(f"[MCP] max_agent_iterations={max_agent_iterations}")
             while iteration < max_agent_iterations:
                 iteration += 1
+                with cancellation_lock:
+                    if cancellation_flags.get(stream_id, False):
+                        print(f"[MCP] cancellation requested at start of iteration {iteration}")
+                        yield {"type": "interrupt"}
+                        return
                 print(f"[MCP] iteration {iteration}/{max_agent_iterations} prompt len={len(prompt)}")
                 print(f"[MCP] tools_for_llm: {[t['function']['name'] for t in tools_for_llm]}")
                 agent_context = f'''The user's working directory is {current_path}
@@ -5124,34 +5181,42 @@ IMPORTANT AGENT BEHAVIOR:
 - When you encounter errors, explain what went wrong and what you're trying next.'''
                 print(f"[MCP DEBUG] Messages for LLM (iteration {iteration}): {json.dumps(messages, indent=2, default=str)[:3000]}")
                 call_prompt = prompt if iteration == 1 else ""
-                llm_response = get_llm_response_with_handling(
-                    prompt=call_prompt,
-                    npc=npc_object,
-                    model=model,
-                    provider=provider,
-                    messages=messages,
-                    tools=tools_for_llm,
-                    stream=True,
-                    team=team_object,
-                    context=agent_context if iteration == 1 else None,
-                    **(params or {}),
-                    **thinking_kwargs,
-                )
-                print('RESPONSE', llm_response)
-                stream = llm_response.get("response", [])
-                usage = llm_response.get("usage", {})
-                total_input_tokens += usage.get("input_tokens", 0) or 0
-                total_output_tokens += usage.get("output_tokens", 0) or 0
+                with cancellation_lock:
+                    if cancellation_flags.get(stream_id, False):
+                        print(f"[MCP] cancellation requested before LLM call in iteration {iteration}")
+                        yield {"type": "interrupt"}
+                        return
+                def _llm_callable():
+                    return get_llm_response_with_handling(
+                        prompt=call_prompt,
+                        npc=npc_object,
+                        model=model,
+                        provider=provider,
+                        messages=messages,
+                        tools=tools_for_llm,
+                        stream=True,
+                        team=team_object,
+                        context=agent_context if iteration == 1 else None,
+                        **(params or {}),
+                        **thinking_kwargs,
+                    )
+                llm_stream = _stream_llm_cancellable(_llm_callable, stream_id)
                 collected_content = ""
                 collected_tool_calls = []
                 agent_tool_call_data = {"id": None, "function_name": None, "arguments": ""}
                 last_response_chunk = None
-                for response_chunk in stream:
+                for item in llm_stream:
+                    if item["kind"] == "cancel":
+                        print(f"[MCP] LLM streaming cancelled in iteration {iteration}")
+                        yield {"type": "interrupt"}
+                        return
+                    if item["kind"] == "usage":
+                        usage = item["usage"]
+                        total_input_tokens += usage.get("input_tokens", 0) or 0
+                        total_output_tokens += usage.get("output_tokens", 0) or 0
+                        continue
+                    response_chunk = item["chunk"]
                     last_response_chunk = response_chunk
-                    with cancellation_lock:
-                        if cancellation_flags.get(stream_id, False):
-                            yield {"type": "interrupt"}
-                            return
                     if "hf.co" in model or provider == 'ollama':
                         msg = getattr(response_chunk, "message", None) or (response_chunk.get("message", {}) if hasattr(response_chunk, "get") else {})
                         chunk_content = getattr(msg, "content", None) or (msg.get("content") if hasattr(msg, "get") else "") or ""
@@ -5170,8 +5235,6 @@ IMPORTANT AGENT BEHAVIOR:
                                             arg_str = json.dumps(arg_str)
                                         elif arg_str is None:
                                             arg_str = "{}"
-                                        # If the provider reuses the same id (e.g. 'call_0'),
-                                        # force a unique id per distinct call.
                                         final_tc_id = tc_id or f"call_{len(collected_tool_calls)}"
                                         seen_ids = {tc.get("id") for tc in collected_tool_calls}
                                         if final_tc_id in seen_ids:
@@ -5260,10 +5323,6 @@ IMPORTANT AGENT BEHAVIOR:
                         if eval_count:
                             total_output_tokens += eval_count
 
-                    if stop_requested:
-                        print("[MCP] stop requested, finishing streaming loop")
-                        break
-
                     if tools_executed and iteration < 10:
                         print("[MCP] no tool calls after prior tools; re-prompting to continue")
                         messages.append({"role": "assistant", "content": collected_content})
@@ -5277,8 +5336,6 @@ IMPORTANT AGENT BEHAVIOR:
                     print("[MCP] no tool calls, finishing streaming loop")
                     break
 
-                # Ensure every collected tool call has a unique id so the frontend
-                # doesn't collapse distinct calls into one.
                 for i, tc in enumerate(collected_tool_calls):
                     if not tc.get("id"):
                         tc["id"] = f"call_{iteration}_{i}_{uuid.uuid4().hex[:8]}"
@@ -5354,7 +5411,7 @@ IMPORTANT AGENT BEHAVIOR:
                             "command_key": cmd_key,
                             "args_preview": preview,
                         }
-                        decision = _wait_for_permission_response(request_id, timeout=120)
+                        decision = _wait_for_permission_response(request_id, stream_id=stream_id)
                         if decision is None:
                             decision = "No"
                         allowed = _apply_permission_decision(decision, tool_name, tool_args, executor, session_grants, team_object)
@@ -5371,45 +5428,50 @@ IMPORTANT AGENT BEHAVIOR:
                         tool_failed = False
                         tools_executed = True
                         if executor:
-                            if executor["type"] == "jinx":
-                                jinx_obj = executor["jinx"]
-                                try:
+                            def _execute_tool():
+                                if executor["type"] == "jinx":
+                                    jinx_obj = executor["jinx"]
                                     jinx_ctx = jinx_obj.execute(
                                         input_values=tool_args if isinstance(tool_args, dict) else {},
                                         npc=npc_object
                                     )
-                                    tool_content = str(jinx_ctx.get('output', '')) if isinstance(jinx_ctx, dict) else str(jinx_ctx)
-                                    if isinstance(jinx_ctx, dict) and jinx_ctx.get('stop_requested'):
-                                        stop_requested = True
-                                        print(f"[MCP] stop_requested set by jinx '{tool_name}'")
-                                except Exception as e:
-                                    tool_failed = True
-                                    tool_content = f"Jinx execution error: {str(e)}"
-                            elif executor["type"] == "mcp":
-                                try:
+                                    content = str(jinx_ctx.get('output', '')) if isinstance(jinx_ctx, dict) else str(jinx_ctx)
+                                    stop = isinstance(jinx_ctx, dict) and jinx_ctx.get('stop_requested')
+                                    return {"content": content, "stop_requested": stop}
+                                elif executor["type"] == "mcp":
                                     tool_func = executor["tool_func"]
                                     print(f"[MCP] Calling tool_func for {tool_name}")
                                     result = tool_func(**(tool_args if isinstance(tool_args, dict) else {}))
                                     print(f"[MCP] Raw result type: {type(result)}, value: {result}")
                                     if hasattr(result, 'content'):
                                         if result.content and len(result.content) > 0:
-                                            tool_content = str(result.content[0].text)
+                                            content = str(result.content[0].text)
                                         else:
-                                            tool_content = str(result)
+                                            content = str(result)
                                     else:
-                                        tool_content = str(result) if result is not None else "Tool returned no result"
-                                    print(f"[MCP] Final tool_content: {tool_content}")
-                                except Exception as mcp_e:
-                                    tool_failed = True
-                                    print(f"[MCP] Tool exception: {mcp_e}")
+                                        content = str(result) if result is not None else "Tool returned no result"
+                                    print(f"[MCP] Final tool_content: {content}")
+                                    return {"content": content}
+                                elif executor["type"] == "python":
+                                    content = str(executor["func"](**(tool_args if isinstance(tool_args, dict) else {})))
+                                    return {"content": content}
+                                else:
+                                    raise Exception(f"Tool '{tool_name}' not found in resolved tools")
+                            exec_result = _run_with_cancellation(_execute_tool, stream_id)
+                            if exec_result.get("cancelled"):
+                                tool_failed = True
+                                tool_content = "Tool execution was cancelled."
+                            elif exec_result.get("error"):
+                                tool_failed = True
+                                tool_content = str(exec_result["error"])
+                                if executor.get("type") == "mcp":
                                     traceback.print_exc()
-                                    tool_content = f"MCP tool error: {str(mcp_e)}"
-                            elif executor["type"] == "python":
-                                try:
-                                    tool_content = str(executor["func"](**(tool_args if isinstance(tool_args, dict) else {})))
-                                except Exception as py_e:
-                                    tool_failed = True
-                                    tool_content = f"Python tool error: {str(py_e)}"
+                            else:
+                                value = exec_result.get("value", {})
+                                tool_content = value.get("content", "")
+                                if value.get("stop_requested"):
+                                    stop_requested = True
+                                    print(f"[MCP] stop_requested set by jinx '{tool_name}'")
                         else:
                             tool_failed = True
                             tool_content = f"Tool '{tool_name}' not found in resolved tools"
@@ -5445,13 +5507,30 @@ IMPORTANT AGENT BEHAVIOR:
                             "content": error_msg
                         })
                         yield {"type": "tool_error", "name": tool_name, "id": tool_id, "error": error_msg}
+                if stop_requested:
+                    print("[MCP] stop requested after tool execution, finishing streaming loop")
+                    break
                 tool_results_for_db = tool_results
                 prompt = ""
-            app.mcp_clients[state_key]["messages"] = messages
             mcp_cost = calculate_cost(model, total_input_tokens, total_output_tokens, provider=provider) if total_input_tokens or total_output_tokens else 0
             if total_input_tokens or total_output_tokens:
                 yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "cost": mcp_cost or 0}
             return
+
+        def _cancel_stream():
+            with cancellation_lock:
+                event = stream_cancel_events.get(stream_id)
+                q = stream_chunk_queues.get(stream_id)
+            if q is not None:
+                try:
+                    q.put({"type": "__cancel__"}, block=False)
+                except queue.Full:
+                    pass
+            if event is not None:
+                event.set()
+        with cancellation_lock:
+            stream_cancel_callbacks[stream_id] = _cancel_stream
+
         stream_response = stream_mcp_sse()
     else:
         stream_response = {"output": f"Unsupported execution mode: {exe_mode}", "messages": messages}
@@ -5730,7 +5809,7 @@ IMPORTANT AGENT BEHAVIOR:
                 stream_cost = calculate_cost(model, total_input_tokens, total_output_tokens, provider=provider) if total_input_tokens or total_output_tokens else 0
                 yield f"data: {json.dumps({'type': 'usage', 'input_tokens': total_input_tokens, 'output_tokens': total_output_tokens, 'cost': stream_cost or 0})}\n\n"
             yield f"data: {json.dumps({'type': 'message_stop'})}\n\n"
-            _cleanup_stream(current_stream_id, getattr(app, '_last_mcp_state_key', None))
+            _cleanup_stream(current_stream_id)
     return Response(event_stream(stream_id), mimetype="text/event-stream", headers={
         'Cache-Control': 'no-cache',
         'Connection': 'keep-alive',
@@ -5942,10 +6021,15 @@ def interrupt_stream():
     with cancellation_lock:
         print(f"Received interruption request for stream ID: {stream_id_to_cancel}")
         cancellation_flags[stream_id_to_cancel] = True
-    mcp_state_key = getattr(app, '_last_mcp_state_key', None)
-    if mcp_state_key and hasattr(app, 'mcp_clients') and mcp_state_key in app.mcp_clients:
-        print(f"[INTERRUPT] Removing MCP state for {mcp_state_key}")
-        del app.mcp_clients[mcp_state_key]
+        cancel_callback = stream_cancel_callbacks.pop(stream_id_to_cancel, None)
+        cancel_event = stream_cancel_events.get(stream_id_to_cancel)
+    if cancel_callback:
+        try:
+            cancel_callback()
+        except Exception:
+            pass
+    if cancel_event:
+        cancel_event.set()
     return jsonify({"success": True, "message": f"Interruption for stream {stream_id_to_cancel} registered."})
 def _build_command_key(tool_name: str, arguments: dict) -> str:
     """Build a hierarchical command key for permission matching."""
@@ -5998,21 +6082,17 @@ def _permission_rules_for_team(team_object):
 def _check_tool_permission(tool_name, arguments, executor, session_grants, team_object):
     """Return 'allow', 'deny', or 'ask' for a tool call."""
     cmd_key = _build_command_key(tool_name, arguments)
-    # Session grants first.
     session_decision = _match_permission(cmd_key, session_grants)
     if session_decision:
         return session_decision if session_decision != "session" else "allow"
-    # Jinx own metadata.
     if executor and executor.get("type") == "jinx" and executor.get("jinx"):
         jinx_perm = executor["jinx"].check_permission()
         if jinx_perm != "ask":
             return jinx_perm
-    # Workspace/global rules.
     rules = _permission_rules_for_team(team_object)
     rule = _match_permission(cmd_key, rules)
     if rule:
         return "allow" if rule == "auto" else rule
-    # Safe defaults.
     if tool_name in ("chat", "help", "stop"):
         return "allow"
     return "ask"
@@ -6047,11 +6127,23 @@ def _save_permission(key: str, level: str, team_object):
     existing[key] = level
     with open(perm_path, "w") as f:
         yaml.dump({"rules": existing}, f, default_flow_style=False)
-def _wait_for_permission_response(request_id, timeout=120):
+def _wait_for_permission_response(request_id, stream_id=None, timeout=600):
     event = threading.Event()
     with permission_lock:
         permission_requests[request_id] = {"event": event, "decision": None}
-    ready = event.wait(timeout=timeout)
+    deadline = time.time() + timeout
+    ready = False
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            break
+        ready = event.wait(timeout=min(0.2, remaining))
+        if ready:
+            break
+        if stream_id:
+            with cancellation_lock:
+                if cancellation_flags.get(stream_id, False):
+                    break
     with permission_lock:
         entry = permission_requests.pop(request_id, None)
     if not ready or not entry:

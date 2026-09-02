@@ -35,7 +35,7 @@ base_requirements = [
     "rich",
     "colorama",
     "docstring_parser",
-    "Pillow>=12.1.1",
+    "Pillow>=12.3.0",
     "python-dotenv",
     "pandas",
     "polars",
@@ -85,7 +85,7 @@ extra_files = package_files("npcpy/npc_team/")
 
 setup(
     name="npcpy",
-    version="2.1.15",
+    version="2.1.16",
     packages=find_packages(exclude=["tests*"]),
     install_requires=base_requirements,  
     extras_require={
