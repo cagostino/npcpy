@@ -35,7 +35,7 @@ base_requirements = [
     "rich",
     "colorama",
     "docstring_parser",
-    "Pillow>=12.1.1",
+    "Pillow>=12.3.0",
     "python-dotenv",
     "pandas",
     "polars",
