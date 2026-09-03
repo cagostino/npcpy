@@ -13,6 +13,7 @@ import queue
 import uuid
 import sys
 import traceback
+import types
 import glob
 import re
 import time
@@ -5173,12 +5174,12 @@ def stream():
                 print(f"[MCP] iteration {iteration}/{max_agent_iterations} prompt len={len(prompt)}")
                 print(f"[MCP] tools_for_llm: {[t['function']['name'] for t in tools_for_llm]}")
                 agent_context = f'''The user's working directory is {current_path}
-IMPORTANT AGENT BEHAVIOR:
-- If a tool call fails or returns an error, DO NOT give up. Try alternative approaches.
-- If a file is not found, search for it using different paths or patterns.
-- If one method doesn't work, try another method to accomplish the task.
-- Keep working on the task until it is complete or you have exhausted all reasonable options.
-- When you encounter errors, explain what went wrong and what you're trying next.'''
+                    IMPORTANT AGENT BEHAVIOR:
+                    - If a tool call fails or returns an error, DO NOT give up. Try alternative approaches.
+                    - If a file is not found, search for it using different paths or patterns.
+                    - If one method doesn't work, try another method to accomplish the task.
+                    - Keep working on the task until it is complete or you have exhausted all reasonable options.
+                    - When you encounter errors, explain what went wrong and what you're trying next.'''
                 print(f"[MCP DEBUG] Messages for LLM (iteration {iteration}): {json.dumps(messages, indent=2, default=str)[:3000]}")
                 call_prompt = prompt if iteration == 1 else ""
                 with cancellation_lock:
@@ -5435,9 +5436,20 @@ IMPORTANT AGENT BEHAVIOR:
                                         input_values=tool_args if isinstance(tool_args, dict) else {},
                                         npc=npc_object
                                     )
-                                    content = str(jinx_ctx.get('output', '')) if isinstance(jinx_ctx, dict) else str(jinx_ctx)
+                                    raw_output = jinx_ctx.get('output') if isinstance(jinx_ctx, dict) else jinx_ctx
+                                    events = []
+                                    content_parts = []
+                                    if hasattr(raw_output, "__iter__") and isinstance(raw_output, types.GeneratorType):
+                                        for event in raw_output:
+                                            events.append(event)
+                                            if isinstance(event, dict) and event.get("type") == "content_delta":
+                                                delta = event.get('choices', [{}])[0].get('delta', {})
+                                                content_parts.append(delta.get('content', ""))
+                                        content = "".join(content_parts)
+                                    else:
+                                        content = str(raw_output) if raw_output is not None else ""
                                     stop = isinstance(jinx_ctx, dict) and jinx_ctx.get('stop_requested')
-                                    return {"content": content, "stop_requested": stop}
+                                    return {"content": content, "stop_requested": stop, "events": events}
                                 elif executor["type"] == "mcp":
                                     tool_func = executor["tool_func"]
                                     print(f"[MCP] Calling tool_func for {tool_name}")
@@ -5469,6 +5481,8 @@ IMPORTANT AGENT BEHAVIOR:
                             else:
                                 value = exec_result.get("value", {})
                                 tool_content = value.get("content", "")
+                                for event in value.get("events", []):
+                                    yield event
                                 if value.get("stop_requested"):
                                     stop_requested = True
                                     print(f"[MCP] stop_requested set by jinx '{tool_name}'")
