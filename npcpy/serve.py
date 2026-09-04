@@ -838,7 +838,7 @@ def embed_kg_facts():
         for i in range(0, len(statements), batch_size):
             batch = statements[i:i + batch_size]
             try:
-                embeddings = get_embeddings(batch)
+                embeddings = get_embeddings(batch, "nomic-embed-text", "ollama")
             except Exception as e:
                 print(f"Failed to get embeddings for batch {i}: {e}")
                 continue
@@ -884,7 +884,7 @@ def search_kg_semantic():
         if not chroma_db_path:
             return jsonify({"error": "CHROMA_DB_PATH not configured", "facts": [], "query": q}), 500
         try:
-            query_embedding = get_embeddings([q])[0]
+            query_embedding = get_embeddings([q], "nomic-embed-text", "ollama")[0]
         except Exception as e:
             return jsonify({
                 "error": f"Failed to generate embedding: {str(e)}",
