@@ -15,10 +15,10 @@
 ```bash
 pip install npcpy
 ```
-[![MCP Toplist](https://mcptoplist.com/badge/mcp.so%2Fnpcpy%2FNPC-Worldwide.svg)](https://mcptoplist.com/server/mcp.so%2Fnpcpy%2FNPC-Worldwide)
+
 
 ## Quick Examples
-
+response
 ### Create and use personas
 
 ```python
@@ -55,9 +55,11 @@ print(response['response'])
 ```
 Cú Chulainn was primarily aided by his divine father, the god Lugh, and his foster-father, the warrior-god Fergus mac Róich, as well as the magical support of his teacher Scáthach.
 ```
+
 ```python
-# try ollama's cloud models
-alicanto_test = get_llm_response('what does alicanto the bird show travelers in the night?', model='minimax-m2.7:cloud', provider='ollama',)
+Try out almost 200 different models from 15 different providers with OrcaRouter using our [referral link](https://www.orcarouter.ai/ref/ref_900cb60d234853be6842)!
+
+alicanto_test = get_llm_response('what does alicanto the bird show travelers in the night?', model='google/gemini-3.8-flash', provider='orcarouter')
 
 print(alicanto_test['response'])
 ```
@@ -69,6 +71,7 @@ The bird **shows the way to hidden water (and sometimes to buried silver or gold
 
 ### Agent with tools
 The `Agent` class in `npcpy` comes with a set of default tools (sh, python, edit_file, web_search, etc.)
+
 
 ```python
 from npcpy import Agent

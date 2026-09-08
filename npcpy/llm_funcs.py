@@ -188,6 +188,9 @@ def resolve_model_provider(
         a_url = a_url or os.environ.get("MINIMAX_API_URL") or "https://api.minimax.io/v1"
         p = "anthropic" if a_url.rstrip("/").endswith("/anthropic") else "openai"
         a_key = a_key or os.environ.get("MINIMAX_API_KEY")
+    if p in ("orcarouter", "orca"):
+        a_url = a_url or os.environ.get("ORCAROUTER_API_URL") or "https://api.orcarouter.ai/v1"
+        a_key = a_key or os.environ.get("ORCAROUTER_API_KEY")
     return m, p, a_url, a_key
 
 

@@ -17,7 +17,10 @@ import requests
 ON_WINDOWS = platform.system() == "Windows"
 ON_MACOS = platform.system() == "Darwin"
 MINIMAX_MODELS = frozenset({"MiniMax-M3", "MiniMax-M2.7"})
-_PROVIDER_FALLBACK_MODELS = {"minimax": {"MiniMax-M2.7"}}
+_PROVIDER_FALLBACK_MODELS = {
+    "minimax": {"MiniMax-M2.7"},
+    "orcarouter": {"orcarouter/auto", "orcarouter/free", "orcarouter/fusion", "orcarouter/fusion-flash", "orcarouter/fusion-mini"},
+}
 
 def get_data_dir() -> str:
     """Get the data directory."""
@@ -169,6 +172,7 @@ def get_locally_available_models(project_directory, airplane_mode=False, gguf_di
             "hyperbolic": ("HYPERBOLIC_API_KEY", "hyperbolic_models"),
             "sambanova": ("SAMBANOVA_API_KEY", "sambanova_models"),
             "nebius": ("NEBIUS_API_KEY", "nebius_models"),
+            "orcarouter": ("ORCAROUTER_API_KEY", "orcarouter_models"),
         }
 
         try:
@@ -1014,6 +1018,8 @@ def lookup_provider(model: str) -> str:
 
     if model == "deepseek-chat" or model == "deepseek-reasoner":
         return "deepseek"
+    if model.startswith("orcarouter/") or model.startswith("orca/"):
+        return "orcarouter"
 
     if model.startswith("airllm-"):
         return "airllm"
@@ -1039,6 +1045,7 @@ def lookup_provider(model: str) -> str:
     return None
 
 load_env_from_execution_dir()
+orcarouter_api_key = os.getenv("ORCAROUTER_API_KEY", None)
 deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", None)
 gemini_api_key = os.getenv("GEMINI_API_KEY", None)
 
