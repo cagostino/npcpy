@@ -2226,6 +2226,9 @@ def get_qllm_response(
         "tool_results": [],
     }
 
+    if isinstance(model, str):
+        if (model.startswith("orcarouter/") or model.startswith("orca/")) and model.count("/") > 1:
+            model = model.split("/", 1)[1]
     if model is None:
         raise ValueError("No QLLM model specified. Pass a directory or .pt checkpoint path.")
 
@@ -2460,6 +2463,12 @@ def get_litellm_response(
         api_key = api_key or "omlx"
         if 'timeout' not in kwargs:
             kwargs['timeout'] = 300
+    elif provider in ('orcarouter', 'orca'):
+        api_url = api_url or os.environ.get("ORCAROUTER_API_URL") or "https://api.orcarouter.ai/v1"
+        api_key = api_key or os.environ.get("ORCAROUTER_API_KEY")
+        provider = "openai"
+        if 'timeout' not in kwargs:
+            kwargs['timeout'] = 300
 
     if attachments:
         for attachment in attachments:
@@ -2594,19 +2603,12 @@ def get_litellm_response(
         api_params["api_base"] = api_url
         if provider != "anthropic":
             provider = "openai"
-    
-    
-    if provider =='enpisi' and api_url is None:
-        api_params['api_base'] = 'https://api.enpisi.com'
-        if api_key is None:
-            api_key = os.environ.get('NPC_STUDIO_LICENSE_KEY')
-            api_params['api_key'] = api_key
-        if '-npc' in model: 
-            model = model.split('-npc')[0]
-        provider = "openai"
 
     if isinstance(format, type) and issubclass(format, BaseModel):
         api_params["response_format"] = format
+    if isinstance(model, str):
+        if (model.startswith("orcarouter/") or model.startswith("orca/")) and model.count("/") > 1:
+            model = model.split("/", 1)[1]
     if model is None:
         raise ValueError("No model specified. Please set a model in your NPC configuration or team settings.")
     if provider is None:
