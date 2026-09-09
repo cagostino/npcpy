@@ -77,6 +77,8 @@ def clean_messages_for_llm(messages: List[dict]) -> List[dict]:
     Tool call messages without matching tool results (and vice versa) cause
     API errors with OpenAI-compatible providers.  This function strips them.
     """
+    if messages is None:
+        return []
     tool_call_ids_with_results = set()
     all_tool_call_ids = set()
 

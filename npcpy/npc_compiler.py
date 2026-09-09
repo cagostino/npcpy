@@ -1,7 +1,7 @@
 import os
 import shutil
-from pyexpat.errors import messages
 import urllib.parse
+import uuid
 import yaml
 import json
 import sqlite3
@@ -10,12 +10,14 @@ import pandas as pd
 import re
 import random
 from datetime import datetime
+import time
 import hashlib
 import pathlib
-import sys 
+import sys
 import fnmatch
 import subprocess
-import traceback as _traceback
+import traceback
+import types
 from typing import Any, Dict, List, Optional, Union, Callable, Tuple
 from jinja2 import Environment, FileSystemLoader, Template, Undefined, DictLoader
 from jinja2.sandbox import SandboxedEnvironment
@@ -25,15 +27,14 @@ import npcpy as npy
 # fresh interpreter without npcpy on sys.path. Deriving the path from the package
 # itself (rather than hardcoding a machine-specific path) keeps jinxes portable.
 try:
-    _npcpy_pkg_dir = os.path.dirname(os.path.abspath(npy.__file__))
-    _npcpy_parent = os.path.dirname(_npcpy_pkg_dir)
-    if _npcpy_parent not in sys.path:
-        sys.path.insert(0, _npcpy_parent)
+    npcpy_pkg_dir = os.path.dirname(os.path.abspath(npy.__file__))
+    npcpy_parent = os.path.dirname(npcpy_pkg_dir)
+    if npcpy_parent not in sys.path:
+        sys.path.insert(0, npcpy_parent)
 except Exception:
     pass
 from npcpy.tools import auto_tools
 import math
-import random
 import base64
 import logging
 from npcpy.npc_sysenv import (
@@ -714,12 +715,12 @@ class Jinx:
         try:
             exec(rendered_code, exec_globals, exec_locals)
         except SystemExit as e:
-            error_msg = f"Error executing step '{step_name}' in jinx '{self.jinx_name}': code called sys.exit({e.code})\n--- rendered code ---\n{rendered_code}\n--- traceback ---\n{_traceback.format_exc()}"
+            error_msg = f"Error executing step '{step_name}' in jinx '{self.jinx_name}': code called sys.exit({e.code})\n--- rendered code ---\n{rendered_code}\n--- traceback ---\n{traceback.format_exc()}"
             logger.error("[JINX-ERROR] %s", error_msg)
             context['output'] = error_msg
             return context
         except Exception as e:
-            error_msg = f"Error executing step '{step_name}' in jinx '{self.jinx_name}': {type(e).__name__}: {e}\n--- rendered code ---\n{rendered_code}\n--- traceback ---\n{_traceback.format_exc()}"
+            error_msg = f"Error executing step '{step_name}' in jinx '{self.jinx_name}': {type(e).__name__}: {e}\n--- rendered code ---\n{rendered_code}\n--- traceback ---\n{traceback.format_exc()}"
             logger.error("[JINX-ERROR] %s", error_msg)
             context['output'] = error_msg
             return context
@@ -3694,6 +3695,7 @@ class Agent(NPC):
         skills_dir: str = None,
         mcp_servers: list = None,
         safe_tools: bool = False,
+        npc: 'NPC' = None,
         **kwargs,
     ):
         _EXEC_TOOLS = {_tool_sh, _tool_python}
@@ -3703,14 +3705,55 @@ class Agent(NPC):
         if tools is not None:
             all_tools = tools
 
-        super().__init__(
-            name=name,
-            primary_directive=primary_directive,
-            model=model,
-            provider=provider,
-            tools=all_tools,
-            **kwargs,
-        )
+        if npc is not None:
+            npc_name = getattr(npc, 'name', None) or name
+            npc_primary = primary_directive if primary_directive != "You are a helpful AI agent with access to tools." else (getattr(npc, 'primary_directive', None) or primary_directive)
+            npc_model = model or getattr(npc, 'model', None)
+            npc_provider = provider or getattr(npc, 'provider', None)
+            init_kwargs = {
+                'name': npc_name,
+                'primary_directive': npc_primary,
+                'model': npc_model,
+                'provider': npc_provider,
+                'team': kwargs.pop('team', None) or getattr(npc, 'team', None),
+                'api_url': kwargs.pop('api_url', None) or getattr(npc, 'api_url', None),
+                'api_key': kwargs.pop('api_key', None) or getattr(npc, 'api_key', None),
+                'memory': getattr(npc, 'memory', False),
+                **kwargs,
+            }
+            if tools is None and getattr(npc, 'tools', None):
+                init_kwargs['tools'] = npc.tools
+            elif tools is not None:
+                init_kwargs['tools'] = all_tools
+            else:
+                init_kwargs['tools'] = all_tools
+            super().__init__(**init_kwargs)
+
+            if hasattr(npc, 'tool_map'):
+                self.tool_map = npc.tool_map
+            if hasattr(npc, 'tools_schema'):
+                self.tools_schema = npc.tools_schema
+            if hasattr(npc, 'jinxes_dict'):
+                self.jinxes_dict = npc.jinxes_dict
+            if hasattr(npc, 'jinx_tool_catalog'):
+                self.jinx_tool_catalog = npc.jinx_tool_catalog
+            if hasattr(npc, 'mcp_servers'):
+                self.mcp_servers = npc.mcp_servers
+            if hasattr(npc, 'jinxes_spec'):
+                self.jinxes_spec = npc.jinxes_spec
+            if hasattr(npc, 'shared_context'):
+                self.shared_context = npc.shared_context
+            if hasattr(npc, 'memory'):
+                self.memory = npc.memory
+        else:
+            super().__init__(
+                name=name,
+                primary_directive=primary_directive,
+                model=model,
+                provider=provider,
+                tools=all_tools,
+                **kwargs,
+            )
 
         if mcp_servers:
             self.mcp_servers = mcp_servers
@@ -3720,6 +3763,18 @@ class Agent(NPC):
 
         if skills_dir:
             self._load_skills_dir(skills_dir)
+
+    def exclude_jinxes(self, names):
+        """Remove named jinxes from this agent's available tools.
+
+        Use this when spawning sub-agents that should not be able to
+        recursively invoke the jinx that created them.
+        """
+        if isinstance(names, str):
+            names = [names]
+        for name in names:
+            self.jinxes_dict.pop(name, None)
+            self.jinx_tool_catalog.pop(name, None)
 
     def _load_agents_md(self, path: str):
         """Load agent definitions from an agents.md file.
@@ -3790,8 +3845,6 @@ class Agent(NPC):
             allow_tools: optional list of tool names that bypass the prompt.
         """
         import sys
-        import json as _json
-        import uuid as _uuid
         from npcpy.llm_funcs import get_llm_response
 
         messages = list(kwargs.get("messages", []) or [])
@@ -3802,15 +3855,15 @@ class Agent(NPC):
         approve_all = [False]
         is_tty = sys.stdin.isatty()
 
-        def _log(msg):
+        def log(msg):
             if verbose:
                 print(msg, flush=True)
 
-        def _ask(tool_name, args):
+        def ask(tool_name, args):
             if not require_permission or tool_name in allow_tools or approve_all[0]:
                 return True
             if not is_tty:
-                _log(f"[agent:{self.name}] non-TTY: auto-allow {tool_name}")
+                log(f"[agent:{self.name}] non-TTY: auto-allow {tool_name}")
                 return True
             args_str = str(args)
             if len(args_str) > 300:
@@ -3822,30 +3875,30 @@ class Agent(NPC):
                 return True
             return resp.startswith("y")
 
-        def _extract_tc(tc):
+        def extract_tc(tc):
             if isinstance(tc, dict):
-                tc_id = tc.get("id") or str(_uuid.uuid4())
+                tc_id = tc.get("id") or str(uuid.uuid4())
                 fn = tc.get("function", {}) or {}
                 name = fn.get("name", "")
                 args_raw = fn.get("arguments", "{}")
             else:
-                tc_id = getattr(tc, "id", None) or str(_uuid.uuid4())
+                tc_id = getattr(tc, "id", None) or str(uuid.uuid4())
                 fn_obj = getattr(tc, "function", None)
                 name = getattr(fn_obj, "name", "") if fn_obj else ""
                 args_raw = getattr(fn_obj, "arguments", "{}") if fn_obj else "{}"
             if isinstance(args_raw, str):
                 try:
-                    args = _json.loads(args_raw)
-                except (_json.JSONDecodeError, TypeError):
+                    args = json.loads(args_raw)
+                except (json.JSONDecodeError, TypeError):
                     args = {"raw_arguments": args_raw}
             else:
                 args = args_raw or {}
             return tc_id, name, args
 
-        _log(f"[agent:{self.name}] run start | model={self.model} provider={self.provider} | prompt={input_text!r}")
+        log(f"[agent:{self.name}] run start | model={self.model} provider={self.provider} | prompt={input_text!r}")
 
         for iteration in range(max_iterations):
-            _log(f"[agent:{self.name}] iter {iteration+1}/{max_iterations} → calling model")
+            log(f"[agent:{self.name}] iter {iteration+1}/{max_iterations} → calling model")
             result = get_llm_response(
                 prompt,
                 npc=self,
@@ -3865,7 +3918,7 @@ class Agent(NPC):
                 last_content = content
 
             if not tool_calls:
-                _log(f"[agent:{self.name}] no tool_calls → returning content ({len(last_content)} chars)")
+                log(f"[agent:{self.name}] no tool_calls → returning content ({len(last_content)} chars)")
                 return last_content
 
             messages = result.get("messages", messages)
@@ -3874,8 +3927,8 @@ class Agent(NPC):
                     and "tool_calls" not in messages[-1]):
                 messages = messages[:-1]
 
-            extracted = [_extract_tc(tc) for tc in tool_calls]
-            _log(f"[agent:{self.name}] tool_calls: {[name for _, name, _ in extracted]}")
+            extracted = [extract_tc(tc) for tc in tool_calls]
+            log(f"[agent:{self.name}] tool_calls: {[name for _, name, _ in extracted]}")
 
             messages.append({
                 "role": "assistant",
@@ -3891,12 +3944,12 @@ class Agent(NPC):
             })
 
             for tc_id, name, args in extracted:
-                if not _ask(name, args):
+                if not ask(name, args):
                     result_str = "[permission denied by user]"
                 elif name in self.tool_map:
                     try:
                         tool_result = self.tool_map[name](**args)
-                        result_str = _json.dumps(tool_result, default=str) if not isinstance(tool_result, str) else tool_result
+                        result_str = json.dumps(tool_result, default=str) if not isinstance(tool_result, str) else tool_result
                     except Exception as e:
                         result_str = f"Error executing {name}: {e}"
                 else:
@@ -3920,6 +3973,309 @@ class Agent(NPC):
 
         _log(f"[agent:{self.name}] hit max_iterations={max_iterations}")
         return last_content or "Max iterations reached without a final answer."
+
+    def _extract_tool_call(self, tc):
+        if isinstance(tc, dict):
+            tc_id = tc.get("id") or str(uuid.uuid4())
+            fn = tc.get("function", {}) or {}
+            name = fn.get("name", "")
+            args_raw = fn.get("arguments", "{}")
+        else:
+            tc_id = getattr(tc, "id", None) or str(uuid.uuid4())
+            fn_obj = getattr(tc, "function", None)
+            name = getattr(fn_obj, "name", "") if fn_obj else ""
+            args_raw = getattr(fn_obj, "arguments", "{}") if fn_obj else "{}"
+        if isinstance(args_raw, str):
+            try:
+                args = json.loads(args_raw)
+            except (json.JSONDecodeError, TypeError):
+                args = {"raw_arguments": args_raw}
+        else:
+            args = args_raw or {}
+        return tc_id, name, args
+
+    def run_stream(
+        self,
+        input_text: str,
+        messages: Optional[List[Dict[str, str]]] = None,
+        context: Optional[str] = None,
+        max_iterations: int = 10,
+        mcp_clients_cache: Optional[dict] = None,
+        selected_tools: Optional[List[str]] = None,
+        **kwargs,
+    ):
+        """Stream an agentic tool-calling loop as SSE-compatible event dicts.
+
+        Yields dicts matching the format consumed by npcpy.serve /api/stream:
+          - {"choices": [{"delta": {"content": "..."}}]} for assistant content
+          - {"type": "tool_execution_start", "tool_calls": [...]}
+          - {"type": "tool_start", "name": ..., "id": ..., "args": ...}
+          - {"type": "tool_result", "name": ..., "id": ..., "result": ...}
+          - {"type": "tool_error", "name": ..., "id": ..., "error": ...}
+          - {"type": "usage", "input_tokens": ..., "output_tokens": ..., "cost": ...}
+
+        Nested jinx tools that themselves return generators are iterated and
+        their events are yielded inline.
+        """
+        from npcpy.llm_funcs import get_llm_response
+        from npcpy.streaming import (
+            clean_messages_for_llm,
+            ensure_system_prompt,
+            parse_stream_chunk,
+            execute_tool,
+            resolve_npc_tools,
+        )
+        from npcpy.gen.response import calculate_cost
+
+        def accumulate_tool_call_deltas(collected, deltas):
+            for tc_delta in deltas:
+                idx = getattr(tc_delta, "index", len(collected))
+                while len(collected) <= idx:
+                    collected.append({
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""},
+                    })
+                if getattr(tc_delta, "id", None):
+                    collected[idx]["id"] = tc_delta.id
+                fn = getattr(tc_delta, "function", None)
+                if fn:
+                    if getattr(fn, "name", None):
+                        collected[idx]["function"]["name"] = fn.name
+                    if getattr(fn, "arguments", None):
+                        collected[idx]["function"]["arguments"] += fn.arguments
+            return collected
+
+        tools_for_llm, tool_executors = resolve_npc_tools(
+            self, mcp_clients_cache=mcp_clients_cache, selected_tools=selected_tools
+        )
+
+        messages = clean_messages_for_llm(messages or [])
+        messages = ensure_system_prompt(messages, npc=self, tool_capable=True)
+        messages.append({"role": "user", "content": input_text})
+
+        prompt = input_text
+        total_input_tokens = 0
+        total_output_tokens = 0
+        stop_requested = False
+        tools_executed = False
+
+        for iteration in range(max_iterations):
+            if stop_requested:
+                break
+
+            response = get_llm_response(
+                prompt,
+                npc=self,
+                model=self.model,
+                provider=self.provider,
+                messages=messages,
+                tools=tools_for_llm,
+                stream=True,
+                team=self.team,
+                auto_process_tool_calls=False,
+                context=context if iteration == 0 else None,
+                **kwargs,
+            )
+
+            stream_iter = response.get("response", []) if isinstance(response, dict) else response
+            usage = response.get("usage", {}) if isinstance(response, dict) else {}
+            total_input_tokens += usage.get("input_tokens", 0) or 0
+            total_output_tokens += usage.get("output_tokens", 0) or 0
+
+            collected_content = ""
+            collected_tool_calls = []
+
+            if hasattr(stream_iter, "__iter__") and not isinstance(stream_iter, (str, dict)):
+                for chunk in stream_iter:
+                    content, reasoning, tc_deltas = parse_stream_chunk(chunk, self.model, self.provider)
+                    if content:
+                        collected_content += content
+                        yield {
+                            "id": getattr(chunk, "id", None),
+                            "object": getattr(chunk, "object", "chat.completion.chunk"),
+                            "created": getattr(chunk, "created", int(time.time())),
+                            "model": getattr(chunk, "model", self.model) or self.model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {"content": content, "role": "assistant"},
+                                "finish_reason": None,
+                            }],
+                        }
+                    if reasoning:
+                        yield {
+                            "id": getattr(chunk, "id", None),
+                            "object": getattr(chunk, "object", "chat.completion.chunk"),
+                            "created": getattr(chunk, "created", int(time.time())),
+                            "model": getattr(chunk, "model", self.model) or self.model,
+                            "choices": [{
+                                "index": 0,
+                                "delta": {"reasoning_content": reasoning, "role": "assistant"},
+                                "finish_reason": None,
+                            }],
+                        }
+                    if tc_deltas:
+                        accumulate_tool_call_deltas(collected_tool_calls, tc_deltas)
+
+                    chunk_usage = getattr(chunk, "usage", None)
+                    if chunk_usage is None and isinstance(chunk, dict):
+                        chunk_usage = chunk.get("usage")
+                    if chunk_usage:
+                        inp = getattr(chunk_usage, "prompt_tokens", None) or (chunk_usage.get("prompt_tokens", 0) if isinstance(chunk_usage, dict) else 0)
+                        out = getattr(chunk_usage, "completion_tokens", None) or (chunk_usage.get("completion_tokens", 0) if isinstance(chunk_usage, dict) else 0)
+                        if inp:
+                            total_input_tokens = inp
+                        if out:
+                            total_output_tokens = out
+                    prompt_eval = getattr(chunk, "prompt_eval_count", None)
+                    eval_count = getattr(chunk, "eval_count", None)
+                    if prompt_eval:
+                        total_input_tokens = prompt_eval
+                    if eval_count:
+                        total_output_tokens = eval_count
+
+            elif isinstance(stream_iter, str):
+                collected_content = stream_iter
+                yield {
+                    "id": None,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": self.model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": stream_iter, "role": "assistant"},
+                        "finish_reason": None,
+                    }],
+                }
+            elif isinstance(stream_iter, dict):
+                val = stream_iter.get("content", stream_iter.get("output", str(stream_iter)))
+                collected_content = str(val)
+                yield {
+                    "id": None,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": self.model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": collected_content, "role": "assistant"},
+                        "finish_reason": None,
+                    }],
+                }
+
+            if not collected_tool_calls:
+                if collected_content:
+                    messages.append({"role": "assistant", "content": collected_content})
+                if tools_executed and iteration < max_iterations - 1:
+                    messages.append({
+                        "role": "user",
+                        "content": "Continue working on the task autonomously. If the task is fully complete, call the stop jinx. Otherwise, take the next necessary action. Do not ask the user what to do.",
+                    })
+                    prompt = ""
+                    continue
+                break
+
+            for i, tc in enumerate(collected_tool_calls):
+                if not tc.get("id"):
+                    tc["id"] = f"call_{iteration}_{i}_{uuid.uuid4().hex[:8]}"
+
+            serialized_tool_calls = []
+            for tc in collected_tool_calls:
+                parsed_args = tc["function"]["arguments"]
+                if isinstance(parsed_args, dict):
+                    args_for_message = json.dumps(parsed_args)
+                else:
+                    args_for_message = str(parsed_args)
+                serialized_tool_calls.append({
+                    "id": tc["id"],
+                    "type": tc["type"],
+                    "function": {
+                        "name": tc["function"]["name"],
+                        "arguments": args_for_message,
+                    },
+                })
+            messages.append({
+                "role": "assistant",
+                "content": collected_content,
+                "tool_calls": serialized_tool_calls,
+            })
+
+            yield {
+                "type": "tool_execution_start",
+                "tool_calls": [
+                    {"name": tc["function"]["name"], "id": tc["id"],
+                     "function": {"name": tc["function"]["name"], "arguments": tc["function"].get("arguments", "")}}
+                    for tc in collected_tool_calls
+                ],
+            }
+
+            for tc in collected_tool_calls:
+                tool_id = tc["id"]
+                tool_name = tc["function"]["name"]
+                tool_args = tc["function"]["arguments"]
+                if isinstance(tool_args, str):
+                    try:
+                        tool_args = json.loads(tool_args) if tool_args.strip() else {}
+                    except json.JSONDecodeError:
+                        tool_args = {}
+
+                yield {"type": "tool_start", "name": tool_name, "id": tool_id, "args": tool_args}
+
+                executor = tool_executors.get(tool_name)
+                tool_content = ""
+                tool_failed = False
+                if executor and executor.get("type") == "jinx":
+                    jinx_obj = executor["jinx"]
+                    try:
+                        jinx_ctx = jinx_obj.execute(
+                            input_values=tool_args if isinstance(tool_args, dict) else {},
+                            npc=self,
+                        )
+                        raw_output = jinx_ctx.get("output") if isinstance(jinx_ctx, dict) else jinx_ctx
+                        if hasattr(raw_output, "__iter__") and isinstance(raw_output, types.GeneratorType):
+                            content_parts = []
+                            for event in raw_output:
+                                yield event
+                                if isinstance(event, dict) and event.get("type") == "content_delta":
+                                    delta = event.get("choices", [{}])[0].get("delta", {})
+                                    content_parts.append(delta.get("content", ""))
+                            tool_content = "".join(content_parts)
+                        else:
+                            tool_content = str(raw_output) if raw_output is not None else ""
+                        if isinstance(jinx_ctx, dict) and jinx_ctx.get("stop_requested"):
+                            stop_requested = True
+                    except Exception as e:
+                        tool_failed = True
+                        tool_content = f"Jinx execution error: {str(e)}"
+                else:
+                    result_event = execute_tool(tool_name, tool_args, tool_id, tool_executors, npc=self)
+                    if result_event.type == "tool_result":
+                        tool_content = result_event.data.get("result", "")
+                    else:
+                        tool_content = result_event.data.get("error", "")
+                        tool_failed = True
+                    yield {**result_event.data, "type": result_event.type}
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_id,
+                    "name": tool_name,
+                    "content": tool_content,
+                })
+
+                if tool_failed:
+                    yield {"type": "tool_error", "name": tool_name, "id": tool_id, "error": tool_content}
+                else:
+                    yield {"type": "tool_result", "name": tool_name, "id": tool_id, "result": tool_content}
+
+                if stop_requested:
+                    break
+
+            tools_executed = True
+            prompt = ""
+
+        if total_input_tokens or total_output_tokens:
+            cost = calculate_cost(self.model, total_input_tokens, total_output_tokens, provider=self.provider)
+            yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "cost": cost or 0}
 
 
 class ToolAgent(Agent):
