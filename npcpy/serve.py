@@ -57,6 +57,10 @@ from npcpy.memory.knowledge_graph import (
     find_similar_facts_chroma,
 )
 from npcpy.gen.response import calculate_cost
+try:
+    import litellm
+except Exception:
+    litellm = None
 from npcpy.memory.search import execute_rag_command
 from npcpy.data.load import load_file_contents
 from npcpy.data.web import search_web
@@ -5306,8 +5310,11 @@ IMPORTANT AGENT BEHAVIOR:
                                         collected_tool_calls[idx]["function"]["name"] = fn.name
                                     if getattr(fn, "arguments", None):
                                         collected_tool_calls[idx]["function"]["arguments"] += fn.arguments
-                if not collected_tool_calls:
-                    if last_response_chunk is not None:
+                if last_response_chunk is not None:
+                    if isinstance(last_response_chunk, dict) and last_response_chunk.get("type") == "usage":
+                        total_input_tokens += last_response_chunk.get("input_tokens", 0) or 0
+                        total_output_tokens += last_response_chunk.get("output_tokens", 0) or 0
+                    else:
                         chunk_usage = getattr(last_response_chunk, 'usage', None)
                         if chunk_usage is None and isinstance(last_response_chunk, dict):
                             chunk_usage = last_response_chunk.get('usage')
@@ -5323,6 +5330,11 @@ IMPORTANT AGENT BEHAVIOR:
                         if eval_count:
                             total_output_tokens += eval_count
 
+                if total_input_tokens or total_output_tokens:
+                    mcp_cost = calculate_cost(model, total_input_tokens, total_output_tokens, provider=provider)
+                    yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "cost": mcp_cost or 0}
+
+                if not collected_tool_calls:
                     if tools_executed and iteration < 10:
                         print("[MCP] no tool calls after prior tools; re-prompting to continue")
                         messages.append({"role": "assistant", "content": collected_content})
@@ -5512,9 +5524,6 @@ IMPORTANT AGENT BEHAVIOR:
                     break
                 tool_results_for_db = tool_results
                 prompt = ""
-            mcp_cost = calculate_cost(model, total_input_tokens, total_output_tokens, provider=provider) if total_input_tokens or total_output_tokens else 0
-            if total_input_tokens or total_output_tokens:
-                yield {"type": "usage", "input_tokens": total_input_tokens, "output_tokens": total_output_tokens, "cost": mcp_cost or 0}
             return
 
         def _cancel_stream():
@@ -5550,6 +5559,35 @@ IMPORTANT AGENT BEHAVIOR:
         tool_call_data = {"id": None, "function_name": None, "arguments": ""}
         total_input_tokens = 0
         total_output_tokens = 0
+
+        def estimate_tokens():
+            if not litellm:
+                return 0, 0
+            try:
+                # Build the prompt messages sent to the LLM so input tokens reflect the full context.
+                input_messages = []
+                for m in (messages or []):
+                    content = m.get('content')
+                    if isinstance(content, list):
+                        text_parts = [part.get('text', '') for part in content if isinstance(part, dict) and part.get('type') == 'text']
+                        content = '\n'.join(text_parts)
+                    if content:
+                        input_messages.append({'role': m.get('role', 'user'), 'content': str(content)})
+                # Include the latest user prompt if it isn't already in messages.
+                if commandstr and (not input_messages or input_messages[-1].get('content') != commandstr):
+                    input_messages.append({'role': 'user', 'content': commandstr})
+                input_tokens = litellm.token_counter(model=f"{provider}/{model}" if provider and '/' not in model else model, messages=input_messages) if input_messages else 0
+            except Exception as e:
+                print(f"[TOKEN_ESTIMATE] input failed: {e}")
+                input_tokens = 0
+            output_text = ''.join(complete_response)
+            try:
+                output_tokens = litellm.token_counter(model=f"{provider}/{model}" if provider and '/' not in model else model, text=output_text) if output_text else 0
+            except Exception as e:
+                print(f"[TOKEN_ESTIMATE] output failed: {e}")
+                output_tokens = 0
+            return input_tokens, output_tokens
+
         try:
             if hasattr(stream_response, "__iter__") and not isinstance(stream_response, (dict, str)):
                 for chunk in stream_response:
