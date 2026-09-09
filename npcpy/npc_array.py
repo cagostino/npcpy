@@ -1218,7 +1218,7 @@ class GraphExecutor:
 
                 result = npc.execute_jinx(
                     jinx_name=jinx_name,
-                    input_values=inputs,
+                    inputs=inputs,
                     **extra_kwargs
                 )
                 return result.get("output", str(result))

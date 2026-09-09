@@ -151,24 +151,57 @@ def calculate_cost(model: str, input_tokens: int, output_tokens: int, provider: 
             return None
         return (input_tokens * float(in_cost)) + (output_tokens * float(out_cost))
 
-    try:
-        info = litellm.get_model_info(model)
-        cost = _cost_from_info(info)
-        if cost is not None:
-            return cost
-    except Exception:
-        pass
-
-    # Try with provider prefix (e.g. openai/gpt-4o)
-    try:
-        resolved_provider = provider or lookup_provider(model)
-        if resolved_provider:
-            info = litellm.get_model_info(f"{resolved_provider}/{model}")
+    def _search_cost_map(name: str):
+        name_lower = name.lower()
+        # Exact key match first.
+        info = litellm.model_cost.get(name)
+        if info:
             cost = _cost_from_info(info)
             if cost is not None:
                 return cost
-    except Exception:
-        pass
+        # Fuzzy substring match against litellm's cost map.
+        best = None
+        for key, info in litellm.model_cost.items():
+            if not isinstance(key, str):
+                continue
+            key_lower = key.lower()
+            if name_lower in key_lower or key_lower in name_lower:
+                cost = _cost_from_info(info)
+                if cost is not None:
+                    if best is None or len(key) < len(best[0]):
+                        best = (key, cost)
+        return best[1] if best else None
+
+    candidates = [model]
+    # Strip common local registry / tag suffixes (e.g. :cloud, :latest)
+    base_model = model.split(":")[0] if ":" in model else model
+    if base_model and base_model != model:
+        candidates.append(base_model)
+
+    for candidate in candidates:
+        try:
+            info = litellm.get_model_info(candidate)
+            cost = _cost_from_info(info)
+            if cost is not None:
+                return cost
+        except Exception:
+            pass
+
+        # Try with provider prefix (e.g. openai/gpt-4o)
+        try:
+            resolved_provider = provider or lookup_provider(candidate)
+            if resolved_provider:
+                info = litellm.get_model_info(f"{resolved_provider}/{candidate}")
+                cost = _cost_from_info(info)
+                if cost is not None:
+                    return cost
+        except Exception:
+            pass
+
+        # Fallback to fuzzy map search for models litellm knows under a different provider prefix.
+        cost = _search_cost_map(candidate)
+        if cost is not None:
+            return cost
 
     return 0.0
 
@@ -2666,7 +2699,51 @@ def get_litellm_response(
             }
 
         if stream:
-            result["response"] = resp
+            # Wrap the litellm generator so we can collect chunks and synthesize a final
+            # usage event for providers (e.g. OpenRouter, OrcaRouter) that don't emit one.
+            collected_chunks = []
+            original_resp = resp
+            def _usage_aware_stream():
+                final_usage_yielded = False
+                try:
+                    for chunk in original_resp:
+                        collected_chunks.append(chunk)
+                        # Some providers emit a final chunk with usage but empty choices.
+                        usage = getattr(chunk, 'usage', None)
+                        if usage is None and isinstance(chunk, dict):
+                            usage = chunk.get('usage')
+                        if usage:
+                            final_usage_yielded = True
+                        yield chunk
+                finally:
+                    if not final_usage_yielded and collected_chunks:
+                        try:
+                            complete = litellm.stream_chunk_builder(collected_chunks, messages=api_params.get('messages'))
+                        except Exception:
+                            complete = None
+                        if complete and hasattr(complete, 'usage') and complete.usage:
+                            inp = getattr(complete.usage, 'prompt_tokens', 0) or 0
+                            out = getattr(complete.usage, 'completion_tokens', 0) or 0
+                            if inp or out:
+                                yield {"type": "usage", "input_tokens": inp, "output_tokens": out}
+                        else:
+                            # Last resort: estimate output tokens from collected text.
+                            try:
+                                full_text = ''
+                                for c in collected_chunks:
+                                    if hasattr(c, 'choices') and c.choices:
+                                        deltas = [getattr(ch.delta, 'content', None) for ch in c.choices]
+                                        full_text += ''.join(d for d in deltas if d)
+                                    elif isinstance(c, dict) and c.get('choices'):
+                                        deltas = [ch.get('delta', {}).get('content') for ch in c['choices']]
+                                        full_text += ''.join(d for d in deltas if d)
+                                if full_text:
+                                    out = litellm.token_counter(model=api_params.get('model'), text=full_text)
+                                    if out:
+                                        yield {"type": "usage", "input_tokens": 0, "output_tokens": out}
+                            except Exception:
+                                pass
+            result["response"] = _usage_aware_stream()
             return result
         else:
             

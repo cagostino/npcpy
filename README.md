@@ -18,7 +18,7 @@ pip install npcpy
 
 
 ## Quick Examples
-response
+
 ### Create and use personas
 
 ```python
@@ -48,7 +48,6 @@ The mountain peaks themselves are the fortress we guard. Without the full libera
 ```python
 from npcpy import get_llm_response
 
-
 response = get_llm_response("Who was the celtic god that helped cuchulainn in his time of need as the forces of medb descended upon the men of ulster?", model='gemma4:31b', provider='ollama')
 print(response['response'])
 ```
@@ -56,9 +55,9 @@ print(response['response'])
 Cú Chulainn was primarily aided by his divine father, the god Lugh, and his foster-father, the warrior-god Fergus mac Róich, as well as the magical support of his teacher Scáthach.
 ```
 
-```python
 Try out almost 200 different models from 15 different providers with OrcaRouter using our [referral link](https://www.orcarouter.ai/ref/ref_900cb60d234853be6842)!
 
+```python
 alicanto_test = get_llm_response('what does alicanto the bird show travelers in the night?', model='google/gemini-3.8-flash', provider='orcarouter')
 
 print(alicanto_test['response'])
