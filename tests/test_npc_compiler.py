@@ -156,26 +156,24 @@ def test_npc_with_database():
             os.remove(temp_db)
 
 
-def test_initialize_project_with_templates(tmp_path):
-    """Ensure template NPC files are copied into a new project"""
-    template_path = Path(__file__).parent / "template_tests" / "npc_team" / "slean.npc"
-    project_dir = tmp_path / "proj_with_templates"
-    msg = initialize_npc_project(directory=project_dir, templates=[template_path])
+def test_initialize_project_basic(tmp_path):
+    """Ensure initialize_npc_project scaffolds a basic npc_team directory"""
+    project_dir = tmp_path / "basic_project"
+    msg = initialize_npc_project(directory=project_dir)
 
-    expected_npc = project_dir / "npc_team" / "slean.npc"
+    expected_npc = project_dir / "npc_team" / "forenpc.npc"
     assert expected_npc.exists()
     assert "npc_team" in msg
 
 
-def test_initialize_project_prefers_custom_ctx(tmp_path):
-    """Custom .ctx from template should be used and default team.ctx skipped"""
-    template_dir = tmp_path / "my_template"
-    template_dir.mkdir()
-    (template_dir / "custom.ctx").write_text("name: custom\ncontext: hello\n")
-    (template_dir / "alpha.npc").write_text("name: alpha\nprimary_directive: test\n")
+def test_initialize_project_prefers_existing_ctx(tmp_path):
+    """An existing .ctx in npc_team should be preferred over generated team.ctx"""
+    project_dir = tmp_path / "proj_existing_ctx"
+    npc_team_dir = project_dir / "npc_team"
+    npc_team_dir.mkdir(parents=True)
+    (npc_team_dir / "custom.ctx").write_text("name: custom\ncontext: hello\n")
 
-    project_dir = tmp_path / "proj_custom_ctx"
-    initialize_npc_project(directory=project_dir, templates=[template_dir])
+    initialize_npc_project(directory=project_dir)
 
     custom_ctx = project_dir / "npc_team" / "custom.ctx"
     default_ctx = project_dir / "npc_team" / "team.ctx"
