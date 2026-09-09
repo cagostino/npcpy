@@ -243,8 +243,6 @@ def initialize_npc_project(
     context=None,
     model=None,
     provider=None,
-    templates=None,
-    include_jinx_groups=None,
 ) -> str:
     """Initialize an NPC project."""
     if directory is None:
@@ -266,20 +264,6 @@ def initialize_npc_project(
                    "attachments",
                    "mcp_servers"]:
         os.makedirs(os.path.join(npc_team_dir, subdir), exist_ok=True)
-
-    # Copy any supplied templates into the new project. A template may be a
-    # single file (e.g. a .npc) or a directory whose files are copied in. This
-    # runs before the forenpc/ctx defaults below so a template that ships its
-    # own forenpc.npc or .ctx takes precedence over the generated defaults.
-    if templates:
-        for template in templates:
-            template_path = pathlib.Path(os.path.expanduser(os.fspath(template)))
-            if template_path.is_dir():
-                for item in template_path.iterdir():
-                    if item.is_file():
-                        shutil.copy2(item, os.path.join(npc_team_dir, item.name))
-            elif template_path.is_file():
-                shutil.copy2(template_path, os.path.join(npc_team_dir, template_path.name))
 
     forenpc_path = os.path.join(npc_team_dir, "forenpc.npc")
 
